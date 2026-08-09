@@ -47,6 +47,21 @@ read_timeout_seconds = 2
 maximum_response_bytes = {maximum_response_bytes}
 
 {dataset_tables}
+
+[catalog]
+satcat_url = "https://celestrak.org/pub/satcat.csv"
+gcat_url = "https://planet4589.org/space/gcat/tsv/cat/satcat.tsv"
+user_agent = "orbit-data-test/1"
+vendor_root = "{Path(__file__).parents[1] / "vendor"}"
+connect_timeout_seconds = 1
+read_timeout_seconds = 2
+maximum_response_bytes = 10485760
+minimum_satcat_records = 1
+maximum_record_drop_fraction = 0.25
+minimum_gcat_join_fraction = 0
+minimum_magnitude_records = 1
+minimum_star_records = 1
+minimum_constellation_records = 1
 """
 
 

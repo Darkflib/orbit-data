@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from orbit_data import __version__
+from orbit_data.catalog import CatalogUpdater
 from orbit_data.config import ConfigError, load_config
 from orbit_data.gp import GpUpdater
 from orbit_data.locking import LockUnavailableError
@@ -26,10 +27,13 @@ def _parser() -> argparse.ArgumentParser:
     subcommands.add_parser("validate-config", help="load and validate configuration")
     subcommands.add_parser("init-storage", help="create the persistent storage tree")
     subcommands.add_parser("sync-gp", help="refresh due CelesTrak GP datasets")
+    subcommands.add_parser("sync-catalog", help="refresh enrichment and sky artifacts")
     return parser
 
 
-def run(argv: Sequence[str] | None = None) -> int:
+def run(  # pylint: disable=too-many-return-statements
+    argv: Sequence[str] | None = None,
+) -> int:
     """Execute the CLI and return a process exit status."""
 
     args = _parser().parse_args(argv)
@@ -52,21 +56,38 @@ def run(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "sync-gp":
         try:
-            result = GpUpdater(config).run()
+            gp_result = GpUpdater(config).run()
         except LockUnavailableError as exc:
             LOGGER.error("GP updater already running", extra={"error": str(exc)})
             return 75
         LOGGER.info(
             "GP update complete",
             extra={
-                "attempted": result.attempted,
-                "published": result.published,
-                "skipped": result.skipped,
-                "failed": result.failed,
-                "stopped": result.stopped,
+                "attempted": gp_result.attempted,
+                "published": gp_result.published,
+                "skipped": gp_result.skipped,
+                "failed": gp_result.failed,
+                "stopped": gp_result.stopped,
             },
         )
-        return 0 if result.successful else 1
+        return 0 if gp_result.successful else 1
+    if args.command == "sync-catalog":
+        try:
+            catalog_result = CatalogUpdater(config).run()
+        except LockUnavailableError as exc:
+            LOGGER.error("catalog updater already running", extra={"error": str(exc)})
+            return 75
+        LOGGER.info(
+            "catalog update complete",
+            extra={
+                "result": catalog_result.result,
+                "changed": catalog_result.changed,
+                "release_id": catalog_result.release_id,
+                "record_count": catalog_result.record_count,
+                "error": catalog_result.error,
+            },
+        )
+        return 0 if catalog_result.successful else 1
 
     raise AssertionError(f"unhandled command: {args.command}")
 

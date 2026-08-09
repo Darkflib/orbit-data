@@ -17,6 +17,7 @@ RUN groupadd --system --gid 10001 orbit-data \
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+COPY vendor ./vendor
 RUN uv sync --frozen --no-dev --no-editable
 
 COPY --chown=orbit-data:orbit-data config/orbit-data.toml /etc/orbit-data.toml

@@ -1,0 +1,3 @@
+# Preserve fixed-width upstream catalogues byte-for-byte.
+vendor/*.dat -whitespace
+vendor/qs.mag -whitespace
