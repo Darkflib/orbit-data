@@ -9,6 +9,8 @@ from pathlib import Path
 
 from orbit_data import __version__
 from orbit_data.config import ConfigError, load_config
+from orbit_data.gp import GpUpdater
+from orbit_data.locking import LockUnavailableError
 from orbit_data.logging import configure_logging
 from orbit_data.publishing import ensure_storage
 
@@ -23,6 +25,7 @@ def _parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("validate-config", help="load and validate configuration")
     subcommands.add_parser("init-storage", help="create the persistent storage tree")
+    subcommands.add_parser("sync-gp", help="refresh due CelesTrak GP datasets")
     return parser
 
 
@@ -47,6 +50,23 @@ def run(argv: Sequence[str] | None = None) -> int:
         ensure_storage(config.storage.root)
         LOGGER.info("storage initialized", extra={"storage_root": str(config.storage.root)})
         return 0
+    if args.command == "sync-gp":
+        try:
+            result = GpUpdater(config).run()
+        except LockUnavailableError as exc:
+            LOGGER.error("GP updater already running", extra={"error": str(exc)})
+            return 75
+        LOGGER.info(
+            "GP update complete",
+            extra={
+                "attempted": result.attempted,
+                "published": result.published,
+                "skipped": result.skipped,
+                "failed": result.failed,
+                "stopped": result.stopped,
+            },
+        )
+        return 0 if result.successful else 1
 
     raise AssertionError(f"unhandled command: {args.command}")
 

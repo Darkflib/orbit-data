@@ -6,13 +6,18 @@ rootless Podman Quadlets on a Linux host, with scheduled one-shot updater
 containers writing to a persistent volume and a separate static web server
 mounting the published tree read-only.
 
-The repository is being implemented in stages. The current foundation provides:
+The repository is being implemented in stages. It currently provides:
 
 - a Python 3.13 package managed with `uv`;
 - structured JSON logging;
 - TOML configuration;
 - atomic static-file and release-directory publication;
 - bounded release retention;
+- a sequential, allow-listed CelesTrak OMM/JSON cache with a persistent
+  two-hour minimum request interval;
+- response-size, schema, physical-range, duplicate-ID, record-floor and
+  record-drop validation;
+- last-known-good behaviour for HTTP, network and validation failures;
 - an unprivileged OCI image; and
 - CI for formatting, linting, typing, tests, security checks, and image builds.
 
@@ -35,6 +40,24 @@ uv run orbit-data --config config/orbit-data.toml init-storage
 ```
 
 The default production configuration expects the persistent volume at `/data`.
+
+Run the due GP queries with:
+
+```bash
+uv run orbit-data --config config/orbit-data.toml sync-gp
+```
+
+The job writes static OMM files below `/data/public/v1/gp/`, per-dataset status
+below `/data/public/v1/status/gp/`, and a run summary at
+`/data/public/v1/status/gp.json`. A request attempt is persisted before network
+I/O, so restarting the process or moving the volume to another host cannot
+accidentally bypass the minimum interval.
+
+`HTTP 403` is treated as an unchanged or rate-limited dataset. Any `5xx`,
+redirect, unexpected HTTP response, network failure, oversized body, or invalid
+OMM response stops the run without replacing the last-known-good file. There
+are no immediate retries. Two consecutive `403` responses also stop the run to
+avoid hammering CelesTrak if the host IP has been firewalled.
 
 ## Container
 
