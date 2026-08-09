@@ -42,6 +42,39 @@ jobs:
         run: podman build --tag orbit-data:test .
       - name: Smoke test image
         run: podman run --rm orbit-data:test --help
+      - name: Validate Caddy configuration
+        run: |
+          podman run --rm --read-only --user 65532:65532 \
+            --volume "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            docker.io/library/caddy:2.11.4-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Smoke test read-only static server
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          trap 'podman rm --force orbit-data-caddy >/dev/null 2>&1 || true' EXIT
+          chmod 0755 "$test_root"
+          mkdir -p "$test_root/releases/catalog/test" "$test_root/public/v1"
+          printf '%s\n' '{"schemaVersion":1}' > "$test_root/releases/catalog/test/manifest.json"
+          ln -s ../../releases/catalog/test "$test_root/public/v1/data"
+          podman run --detach --name orbit-data-caddy --read-only --user 65532:65532 \
+            --publish 127.0.0.1::8080 \
+            --volume "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            --volume "$test_root:/srv/orbit-data:ro" \
+            docker.io/library/caddy:2.11.4-alpine \
+            caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+          port="$(podman port orbit-data-caddy 8080/tcp | sed 's/.*://')"
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent "http://127.0.0.1:${port}/healthz"; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent "http://127.0.0.1:${port}/v1/data/manifest.json"
+      - name: Validate Quadlet generation
+        run: |
+          QUADLET_UNIT_DIRS="$PWD/deploy/quadlet" \
+            /usr/lib/systemd/system-generators/podman-system-generator --dryrun
 
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

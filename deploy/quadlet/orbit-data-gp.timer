@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule Orbit CelesTrak OMM refreshes
+
+[Timer]
+OnBootSec=5m
+OnUnitInactiveSec=2h10m
+RandomizedDelaySec=5m
+AccuracySec=1m
+Unit=orbit-data-gp.service
+
+[Install]
+WantedBy=timers.target

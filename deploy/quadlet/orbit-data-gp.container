@@ -1,0 +1,22 @@
+[Unit]
+Description=Refresh Orbit CelesTrak OMM cache
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/darkflib/orbit-data:latest
+Pull=newer
+Exec=--config /etc/orbit-data.toml sync-gp
+Volume=/srv/orbit-data:/data:rw
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+User=10001
+Group=10001
+LogDriver=journald
+PidsLimit=128
+
+[Service]
+Type=oneshot
+MemoryMax=512M
+TimeoutStartSec=30m

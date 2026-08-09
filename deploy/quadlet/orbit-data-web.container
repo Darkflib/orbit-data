@@ -1,0 +1,30 @@
+[Unit]
+Description=Orbit data static server
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=docker.io/library/caddy:2.11.4-alpine
+Pull=newer
+Exec=caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+Volume=/etc/orbit-data/Caddyfile:/etc/caddy/Caddyfile:ro
+# Mount the complete tree: public release symlinks target ../releases.
+Volume=/srv/orbit-data:/srv/orbit-data:ro
+PublishPort=127.0.0.1:8080:8080
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+User=65532
+Group=65532
+LogDriver=journald
+PidsLimit=128
+
+[Service]
+Restart=always
+RestartSec=5s
+MemoryMax=256M
+TimeoutStartSec=5m
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target
