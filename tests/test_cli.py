@@ -5,6 +5,7 @@
 from pathlib import Path
 from typing import Any
 
+from orbit_data.catalog import CatalogRunResult
 from orbit_data.cli import run
 from orbit_data.gp import GpRunResult
 from orbit_data.locking import LockUnavailableError
@@ -54,3 +55,31 @@ def test_sync_gp_lock_conflict_returns_temporary_failure(tmp_path: Path, monkeyp
     monkeypatch.setattr("orbit_data.cli.GpUpdater", LockedUpdater)
 
     assert run(["--config", str(_config(tmp_path)), "sync-gp"]) == 75
+
+
+def test_sync_catalog_exit_status(tmp_path: Path, monkeypatch: Any) -> None:
+    class FakeUpdater:
+        def __init__(self, _config: Any) -> None:
+            pass
+
+        def run(self) -> CatalogRunResult:
+            return CatalogRunResult(False, False, "failed", None, None, "broken")
+
+    monkeypatch.setattr("orbit_data.cli.CatalogUpdater", FakeUpdater)
+
+    assert run(["--config", str(_config(tmp_path)), "sync-catalog"]) == 1
+
+
+def test_sync_catalog_lock_conflict_returns_temporary_failure(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    class LockedUpdater:
+        def __init__(self, _config: Any) -> None:
+            pass
+
+        def run(self) -> CatalogRunResult:
+            raise LockUnavailableError("held")
+
+    monkeypatch.setattr("orbit_data.cli.CatalogUpdater", LockedUpdater)
+
+    assert run(["--config", str(_config(tmp_path)), "sync-catalog"]) == 75

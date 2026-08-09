@@ -103,3 +103,18 @@ query = "SPECIAL"
 value = "DECAYING"
 minimum_records = 1
 maximum_count_drop_fraction = 0.90
+
+[catalog]
+satcat_url = "https://celestrak.org/pub/satcat.csv"
+gcat_url = "https://planet4589.org/space/gcat/tsv/cat/satcat.tsv"
+user_agent = "orbit-data/0.1 (+https://github.com/Darkflib/orbit-data)"
+vendor_root = "/app/vendor"
+connect_timeout_seconds = 10
+read_timeout_seconds = 120
+maximum_response_bytes = 134217728
+minimum_satcat_records = 20000
+maximum_record_drop_fraction = 0.20
+minimum_gcat_join_fraction = 0.40
+minimum_magnitude_records = 3000
+minimum_star_records = 800
+minimum_constellation_records = 80

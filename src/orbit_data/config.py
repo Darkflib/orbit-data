@@ -53,6 +53,30 @@ class GpConfig:
     datasets: tuple[GpDatasetConfig, ...]
 
 
+# Each field is a separately configurable safety threshold or source setting.
+# pylint: disable=too-many-instance-attributes
+@dataclass(frozen=True, slots=True)
+class CatalogConfig:
+    """Slow-moving catalogue source and validation policy."""
+
+    satcat_url: str
+    gcat_url: str
+    user_agent: str
+    vendor_root: Path
+    connect_timeout_seconds: float
+    read_timeout_seconds: float
+    maximum_response_bytes: int
+    minimum_satcat_records: int
+    maximum_record_drop_fraction: float
+    minimum_gcat_join_fraction: float
+    minimum_magnitude_records: int
+    minimum_star_records: int
+    minimum_constellation_records: int
+
+
+# pylint: enable=too-many-instance-attributes
+
+
 @dataclass(frozen=True, slots=True)
 class AppConfig:
     """Complete application configuration."""
@@ -60,6 +84,7 @@ class AppConfig:
     service: ServiceConfig
     storage: StorageConfig
     gp: GpConfig
+    catalog: CatalogConfig
 
 
 _DATASET_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -161,6 +186,66 @@ def _load_gp(document: dict[str, Any]) -> GpConfig:
     )
 
 
+def _load_catalog(document: dict[str, Any]) -> CatalogConfig:
+    table = _table(document, "catalog")
+    maximum_bytes = table.get("maximum_response_bytes")
+    minimum_records = table.get("minimum_satcat_records")
+    maximum_drop = table.get("maximum_record_drop_fraction")
+    minimum_join = table.get("minimum_gcat_join_fraction")
+    if (
+        not isinstance(maximum_bytes, int)
+        or isinstance(maximum_bytes, bool)
+        or maximum_bytes < 1024
+    ):
+        raise ConfigError("catalog.maximum_response_bytes must be an integer of at least 1024")
+    if (
+        not isinstance(minimum_records, int)
+        or isinstance(minimum_records, bool)
+        or minimum_records < 1
+    ):
+        raise ConfigError("catalog.minimum_satcat_records must be a positive integer")
+    if (
+        not isinstance(maximum_drop, int | float)
+        or isinstance(maximum_drop, bool)
+        or not 0 <= maximum_drop <= 1
+    ):
+        raise ConfigError("catalog.maximum_record_drop_fraction must be between 0 and 1")
+    if (
+        not isinstance(minimum_join, int | float)
+        or isinstance(minimum_join, bool)
+        or not 0 <= minimum_join <= 1
+    ):
+        raise ConfigError("catalog.minimum_gcat_join_fraction must be between 0 and 1")
+    integer_minimums: dict[str, int] = {}
+    for key in (
+        "minimum_magnitude_records",
+        "minimum_star_records",
+        "minimum_constellation_records",
+    ):
+        value = table.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ConfigError(f"catalog.{key} must be a positive integer")
+        integer_minimums[key] = value
+    vendor_root = Path(_non_empty_string(table, "vendor_root", "catalog"))
+    if not vendor_root.is_absolute():
+        raise ConfigError("catalog.vendor_root must be an absolute path")
+    return CatalogConfig(
+        satcat_url=_non_empty_string(table, "satcat_url", "catalog"),
+        gcat_url=_non_empty_string(table, "gcat_url", "catalog"),
+        user_agent=_non_empty_string(table, "user_agent", "catalog"),
+        vendor_root=vendor_root,
+        connect_timeout_seconds=_positive_number(table, "connect_timeout_seconds", "catalog"),
+        read_timeout_seconds=_positive_number(table, "read_timeout_seconds", "catalog"),
+        maximum_response_bytes=maximum_bytes,
+        minimum_satcat_records=minimum_records,
+        maximum_record_drop_fraction=float(maximum_drop),
+        minimum_gcat_join_fraction=float(minimum_join),
+        minimum_magnitude_records=integer_minimums["minimum_magnitude_records"],
+        minimum_star_records=integer_minimums["minimum_star_records"],
+        minimum_constellation_records=integer_minimums["minimum_constellation_records"],
+    )
+
+
 def load_config(path: Path) -> AppConfig:
     """Load and validate an application configuration file."""
 
@@ -185,4 +270,5 @@ def load_config(path: Path) -> AppConfig:
         service=ServiceConfig(name=_non_empty_string(service, "name", "service")),
         storage=StorageConfig(root=root, releases_to_keep=retention),
         gp=_load_gp(document),
+        catalog=_load_catalog(document),
     )
