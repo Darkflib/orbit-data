@@ -74,7 +74,9 @@ class ReleasePublisher:
         """Create an empty staging directory on the publication filesystem."""
 
         self._validate_name(stream, "stream")
-        return Path(tempfile.mkdtemp(prefix=f"{stream}-", dir=self.root / "tmp"))
+        staging = Path(tempfile.mkdtemp(prefix=f"{stream}-", dir=self.root / "tmp"))
+        staging.chmod(0o755)
+        return staging
 
     def publish(self, staging: Path, *, stream: str, public_name: str, release_id: str) -> Path:
         """Promote a completed staging tree and atomically switch the public link."""

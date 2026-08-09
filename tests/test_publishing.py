@@ -69,6 +69,22 @@ def test_failed_publish_keeps_current_release(tmp_path: Path) -> None:
     assert (tmp_path / "public" / "v1" / "data" / "value").read_text() == "good"
 
 
+def test_release_tree_is_traversable_by_static_server(tmp_path: Path) -> None:
+    publisher = ReleasePublisher(tmp_path, releases_to_keep=2)
+    staging = publisher.staging_directory("catalog")
+    atomic_write_bytes(staging / "manifest.json", b"{}\n")
+
+    release = publisher.publish(
+        staging,
+        stream="catalog",
+        public_name="data",
+        release_id="readable",
+    )
+
+    assert release.stat().st_mode & 0o777 == 0o755
+    assert (release / "manifest.json").stat().st_mode & 0o777 == 0o644
+
+
 @pytest.mark.parametrize("value", ["../escape", "has/slash", "", ".hidden"])
 def test_release_names_are_restricted(tmp_path: Path, value: str) -> None:
     publisher = ReleasePublisher(tmp_path, releases_to_keep=2)

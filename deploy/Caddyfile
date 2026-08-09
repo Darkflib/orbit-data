@@ -1,0 +1,30 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	root * /srv/orbit-data/public
+	encode zstd gzip
+
+	@health path /healthz
+	respond @health "ok" 200
+
+	@status path /v1/status/*
+	header @status Cache-Control "no-store"
+
+	@gp path /v1/gp/*
+	header @gp Cache-Control "public, max-age=300, stale-if-error=86400"
+
+	@catalog path /v1/data/*
+	header @catalog Cache-Control "public, max-age=3600, stale-if-error=604800"
+
+	header {
+		Access-Control-Allow-Origin "*"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+	}
+
+	file_server
+	log
+}
