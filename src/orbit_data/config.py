@@ -63,6 +63,8 @@ def load_config(path: Path) -> AppConfig:
     service = _table(document, "service")
     storage = _table(document, "storage")
     root = Path(_non_empty_string(storage, "root", "storage"))
+    if not root.is_absolute():
+        raise ConfigError("storage.root must be an absolute path")
     retention = storage.get("releases_to_keep")
     if not isinstance(retention, int) or isinstance(retention, bool) or retention < 2:
         raise ConfigError("storage.releases_to_keep must be an integer of at least 2")

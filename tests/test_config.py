@@ -36,6 +36,10 @@ def test_load_config(tmp_path: Path) -> None:
             '[service]\nname=""\n[storage]\nroot="/data"\nreleases_to_keep=2\n',
             "service.name",
         ),
+        (
+            '[service]\nname="x"\n[storage]\nroot="relative"\nreleases_to_keep=2\n',
+            "absolute path",
+        ),
     ],
 )
 def test_invalid_config(tmp_path: Path, body: str, message: str) -> None:
