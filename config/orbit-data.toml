@@ -1,0 +1,6 @@
+[service]
+name = "orbit-data"
+
+[storage]
+root = "/data"
+releases_to_keep = 3
