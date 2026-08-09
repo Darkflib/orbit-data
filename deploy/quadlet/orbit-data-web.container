@@ -18,11 +18,11 @@ User=65532
 Group=65532
 LogDriver=journald
 PidsLimit=128
-Memory=256M
 
 [Service]
 Restart=always
 RestartSec=5s
+MemoryMax=256M
 TimeoutStartSec=5m
 TimeoutStopSec=30s
 

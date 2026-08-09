@@ -15,8 +15,8 @@ User=10001
 Group=10001
 LogDriver=journald
 PidsLimit=128
-Memory=768M
 
 [Service]
 Type=oneshot
+MemoryMax=768M
 TimeoutStartSec=30m

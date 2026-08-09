@@ -29,6 +29,7 @@ def test_updaters_share_writable_failover_volume_and_are_oneshot() -> None:
         assert unit["Container"]["NoNewPrivileges"] == "true"
         assert unit["Container"]["DropCapability"] == "all"
         assert unit["Service"]["Type"] == "oneshot"
+        assert unit["Service"]["MemoryMax"].endswith("M")
         assert "RemainAfterExit" not in unit["Service"]
 
 
