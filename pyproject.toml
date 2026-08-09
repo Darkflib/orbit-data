@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "orbit-data"
+version = "0.1.0"
+description = "Static orbital and catalogue data publisher for Darkflib/orbit"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "httpx>=0.28.1,<0.29",
+  "orjson>=3.11.0,<4",
+]
+
+[project.scripts]
+orbit-data = "orbit_data.cli:main"
+
+[dependency-groups]
+dev = [
+  "bandit[toml]>=1.8.6,<2",
+  "mypy>=1.17.0,<2",
+  "pre-commit>=4.3.0,<5",
+  "pylint>=3.3.8,<4",
+  "pytest>=8.4.1,<9",
+  "pytest-cov>=6.2.1,<7",
+  "ruff>=0.12.7,<0.13",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/orbit_data"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "DTZ", "PTH", "RUF", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers --cov=orbit_data --cov-report=term-missing --cov-fail-under=90"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.pylint.main]
+py-version = "3.13"
+jobs = 0
+extension-pkg-allow-list = ["orjson"]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.messages_control]
+disable = ["duplicate-code", "too-few-public-methods"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = []

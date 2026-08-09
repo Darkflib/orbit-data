@@ -1,0 +1,35 @@
+name: Publish image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install Podman
+        run: sudo apt-get update && sudo apt-get install --yes podman
+      - name: Build and publish
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GHCR_TOKEN" | podman login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          podman build --tag "$image:sha-${GITHUB_SHA}" --tag "$image:latest" .
+          podman push "$image:sha-${GITHUB_SHA}"
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            podman push "$image:latest"
+          fi
