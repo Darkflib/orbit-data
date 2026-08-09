@@ -56,7 +56,7 @@ jobs:
           chmod 0755 "$test_root"
           mkdir -p "$test_root/releases/catalog/test" "$test_root/public/v1"
           printf '%s\n' '{"schemaVersion":1}' > "$test_root/releases/catalog/test/manifest.json"
-          ln -s ../../../releases/catalog/test "$test_root/public/v1/data"
+          ln -s ../../releases/catalog/test "$test_root/public/v1/data"
           podman run --detach --name orbit-data-caddy --read-only --user 65532:65532 \
             --publish 127.0.0.1::8080 \
             --volume "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \

@@ -83,6 +83,7 @@ def test_release_tree_is_traversable_by_static_server(tmp_path: Path) -> None:
 
     assert release.stat().st_mode & 0o777 == 0o755
     assert (release / "manifest.json").stat().st_mode & 0o777 == 0o644
+    assert (tmp_path / "public/v1/data").readlink() == Path("../../releases/catalog/readable")
 
 
 @pytest.mark.parametrize("value", ["../escape", "has/slash", "", ".hidden"])
