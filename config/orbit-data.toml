@@ -4,3 +4,102 @@ name = "orbit-data"
 [storage]
 root = "/data"
 releases_to_keep = 3
+
+[gp]
+base_url = "https://celestrak.org/NORAD/elements/gp.php"
+user_agent = "orbit-data/0.1 (+https://github.com/Darkflib/orbit-data)"
+minimum_interval_seconds = 7500
+connect_timeout_seconds = 10
+read_timeout_seconds = 90
+maximum_response_bytes = 67108864
+
+[[gp.datasets]]
+name = "stations"
+query = "GROUP"
+value = "stations"
+minimum_records = 1
+maximum_count_drop_fraction = 0.35
+
+[[gp.datasets]]
+name = "gps-ops"
+query = "GROUP"
+value = "gps-ops"
+minimum_records = 1
+maximum_count_drop_fraction = 0.35
+
+[[gp.datasets]]
+name = "galileo"
+query = "GROUP"
+value = "galileo"
+minimum_records = 1
+maximum_count_drop_fraction = 0.35
+
+[[gp.datasets]]
+name = "glo-ops"
+query = "GROUP"
+value = "glo-ops"
+minimum_records = 1
+maximum_count_drop_fraction = 0.35
+
+[[gp.datasets]]
+name = "beidou"
+query = "GROUP"
+value = "beidou"
+minimum_records = 1
+maximum_count_drop_fraction = 0.35
+
+[[gp.datasets]]
+name = "geo"
+query = "GROUP"
+value = "geo"
+minimum_records = 1
+maximum_count_drop_fraction = 0.35
+
+[[gp.datasets]]
+name = "oneweb"
+query = "GROUP"
+value = "oneweb"
+minimum_records = 1
+maximum_count_drop_fraction = 0.35
+
+[[gp.datasets]]
+name = "starlink"
+query = "GROUP"
+value = "starlink"
+minimum_records = 5000
+maximum_count_drop_fraction = 0.25
+
+[[gp.datasets]]
+name = "kuiper"
+query = "GROUP"
+value = "kuiper"
+minimum_records = 1
+maximum_count_drop_fraction = 0.50
+
+[[gp.datasets]]
+name = "qianfan"
+query = "GROUP"
+value = "qianfan"
+minimum_records = 1
+maximum_count_drop_fraction = 0.50
+
+[[gp.datasets]]
+name = "hulianwang"
+query = "GROUP"
+value = "hulianwang"
+minimum_records = 1
+maximum_count_drop_fraction = 0.50
+
+[[gp.datasets]]
+name = "active"
+query = "GROUP"
+value = "active"
+minimum_records = 10000
+maximum_count_drop_fraction = 0.20
+
+[[gp.datasets]]
+name = "special-decaying"
+query = "SPECIAL"
+value = "DECAYING"
+minimum_records = 1
+maximum_count_drop_fraction = 0.90
