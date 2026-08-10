@@ -66,10 +66,6 @@ def test_health_check_cannot_write_or_depend_on_the_registry() -> None:
     # truncate the tree whose health it is reporting on.
     assert unit["Container"]["Volume"] == "/srv/orbit-data:/data:ro"
     assert unit["Container"]["Exec"].endswith("check-health")
-    # Unlike the updaters: a monitor gated on GHCR reachability goes quiet
-    # exactly when the registry is down, and reports the registry rather than
-    # the data when it is flaky.
-    assert unit["Container"]["Pull"] == "missing"
     assert unit["Container"]["LogDriver"] == "none"
     assert unit["Container"]["DropCapability"] == "all"
     assert unit["Service"]["Type"] == "oneshot"
@@ -83,6 +79,31 @@ def test_health_check_timer_runs_well_inside_the_warning_threshold() -> None:
     assert timer["OnCalendar"] == "hourly"
     assert timer["Persistent"] == "true"
     assert timer["Unit"] == "orbit-data-check.service"
+
+
+def test_pull_policy_matches_whether_the_image_tag_floats() -> None:
+    """`Pull=missing` on a floating tag pins the unit to whatever is cached.
+
+    This is the bug that shipped in the first health-check deployment: the
+    check container floated on `:latest` but never looked again, so it ran an
+    image predating its own subcommand and would have stayed there. `missing`
+    is only correct against a version-pinned tag, where "pull once, upgrade by
+    changing the pin" is the intent.
+    """
+
+    for path in sorted(QUADLETS.glob("*.container")):
+        container = _unit(path.name)["Container"]
+        image = container["Image"]
+        pull = container.get("Pull")
+        if image.endswith(":latest"):
+            assert pull == "newer", (
+                f"{path.name} floats on {image} but uses Pull={pull}, "
+                "which never picks up a new build"
+            )
+        else:
+            assert pull == "missing", (
+                f"{path.name} pins {image}, so it should not re-check the registry"
+            )
 
 
 def test_native_timers_are_not_installed_as_quadlet_sources() -> None:
