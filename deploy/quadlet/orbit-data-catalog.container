@@ -13,7 +13,9 @@ NoNewPrivileges=true
 DropCapability=all
 User=10001
 Group=10001
-LogDriver=journald
+# See orbit-data-gp.container: podman's journald driver duplicates every line
+# systemd already captures from the container's stdout.
+LogDriver=none
 PidsLimit=128
 
 [Service]

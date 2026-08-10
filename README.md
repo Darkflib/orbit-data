@@ -21,6 +21,8 @@ The repository is being implemented in stages. It currently provides:
 - a slow-cadence SATCAT/GCAT enrichment build with vendored magnitude and sky data;
 - deterministic catalogue artifacts with conditional source requests and
   atomic last-known-good publication;
+- an hourly freshness and free-space check that fails a systemd unit when
+  published data ages out;
 - an unprivileged OCI image; and
 - CI for formatting, linting, typing, tests, security checks, and image builds.
 
@@ -83,6 +85,18 @@ or upstream HTTP failure reuses those cached inputs and marks the source stale.
 The job will not publish if a required source has never been cached, a parser or
 record-count safety gate fails, or the merged catalogue drops unexpectedly. If
 the normalized content has not changed, no new release is created.
+
+Report on the published tree without touching it:
+
+```bash
+uv run orbit-data --config config/orbit-data.toml check-health
+```
+
+This reads only the status documents and the filesystem. It reports free space,
+whether the public catalogue still resolves, and how stale each GP dataset and
+the catalogue job have become. Warnings exit `0`; anything critical exits `1` so
+`orbit-data-check.service` fails and systemd's `OnFailure=` can page. Thresholds
+come from the optional `[health]` config table.
 
 ## Container
 

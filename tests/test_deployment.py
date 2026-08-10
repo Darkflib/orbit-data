@@ -34,6 +34,9 @@ def test_updaters_share_writable_failover_volume_and_are_oneshot() -> None:
         assert unit["Service"]["Type"] == "oneshot"
         assert unit["Service"]["MemoryMax"].endswith("M")
         assert "RemainAfterExit" not in unit["Service"]
+        # systemd already journals the container's stdout under this unit;
+        # podman's driver would write a duplicate copy of every line.
+        assert unit["Container"]["LogDriver"] == "none"
 
 
 def test_gp_timer_cannot_undercut_persisted_request_floor() -> None:
@@ -56,11 +59,38 @@ def test_catalog_timer_is_persistent_daily_schedule() -> None:
     assert timer["Unit"] == "orbit-data-catalog.service"
 
 
+def test_health_check_cannot_write_or_depend_on_the_registry() -> None:
+    unit = _unit("orbit-data-check.container")
+
+    # Read-only mount: a monitor must never be able to repair, rotate, or
+    # truncate the tree whose health it is reporting on.
+    assert unit["Container"]["Volume"] == "/srv/orbit-data:/data:ro"
+    assert unit["Container"]["Exec"].endswith("check-health")
+    # Unlike the updaters: a monitor gated on GHCR reachability goes quiet
+    # exactly when the registry is down, and reports the registry rather than
+    # the data when it is flaky.
+    assert unit["Container"]["Pull"] == "missing"
+    assert unit["Container"]["LogDriver"] == "none"
+    assert unit["Container"]["DropCapability"] == "all"
+    assert unit["Service"]["Type"] == "oneshot"
+    # No network is needed to read local status documents.
+    assert "Wants" not in unit["Unit"]
+
+
+def test_health_check_timer_runs_well_inside_the_warning_threshold() -> None:
+    timer = _unit("orbit-data-check.timer", directory=SYSTEMD_UNITS)["Timer"]
+
+    assert timer["OnCalendar"] == "hourly"
+    assert timer["Persistent"] == "true"
+    assert timer["Unit"] == "orbit-data-check.service"
+
+
 def test_native_timers_are_not_installed_as_quadlet_sources() -> None:
     assert not list(QUADLETS.glob("*.timer"))
     assert {path.name for path in SYSTEMD_UNITS.glob("*.timer")} == {
         "orbit-data-gp.timer",
         "orbit-data-catalog.timer",
+        "orbit-data-check.timer",
     }
 
 
@@ -102,12 +132,14 @@ def test_installer_stages_files_and_removes_obsolete_quadlet_timers(
     assert {path.name for path in obsolete_dir.glob("*.container")} == {
         "orbit-data-gp.container",
         "orbit-data-catalog.container",
+        "orbit-data-check.container",
         "orbit-data-web.container",
     }
     installed_timers = install_root / "etc" / "systemd" / "system"
     assert {path.name for path in installed_timers.glob("*.timer")} == {
         "orbit-data-gp.timer",
         "orbit-data-catalog.timer",
+        "orbit-data-check.timer",
     }
     assert (install_root / "etc" / "orbit-data" / "Caddyfile").read_text(encoding="utf-8") == (
         ROOT / "deploy" / "Caddyfile"

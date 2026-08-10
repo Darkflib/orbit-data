@@ -77,6 +77,23 @@ class CatalogConfig:
 # pylint: enable=too-many-instance-attributes
 
 
+# Each field is one independently tunable alert threshold.
+# pylint: disable=too-many-instance-attributes
+@dataclass(frozen=True, slots=True)
+class HealthConfig:
+    """Freshness and capacity thresholds for the `check-health` job."""
+
+    gp_warning_age_seconds: int
+    gp_critical_age_seconds: int
+    catalog_warning_age_seconds: int
+    catalog_critical_age_seconds: int
+    free_bytes_warning: int
+    free_bytes_critical: int
+
+
+# pylint: enable=too-many-instance-attributes
+
+
 @dataclass(frozen=True, slots=True)
 class AppConfig:
     """Complete application configuration."""
@@ -85,6 +102,7 @@ class AppConfig:
     storage: StorageConfig
     gp: GpConfig
     catalog: CatalogConfig
+    health: HealthConfig
 
 
 _DATASET_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -246,6 +264,51 @@ def _load_catalog(document: dict[str, Any]) -> CatalogConfig:
     )
 
 
+# The GP timer fires every 2h10m and the catalogue runs daily with up to 30
+# minutes of jitter, so these defaults leave room for several missed runs before
+# anyone is paged. They are deliberately defaults rather than required keys:
+# a monitoring job that refuses to start because a deployed TOML predates it is
+# a monitoring job that goes quiet exactly when it is needed.
+_HEALTH_DEFAULTS = {
+    "gp_warning_age_seconds": 6 * 3600,
+    "gp_critical_age_seconds": 12 * 3600,
+    "catalog_warning_age_seconds": 36 * 3600,
+    "catalog_critical_age_seconds": 72 * 3600,
+    "free_bytes_warning": 2 * 1024**3,
+    "free_bytes_critical": 512 * 1024**2,
+}
+
+
+def _optional_positive_int(table: dict[str, Any], key: str, section: str) -> int:
+    value = table.get(key, _HEALTH_DEFAULTS[key])
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ConfigError(f"{section}.{key} must be a positive integer")
+    return value
+
+
+def _load_health(document: dict[str, Any]) -> HealthConfig:
+    table = document.get("health", {})
+    if not isinstance(table, dict):
+        raise ConfigError("[health] must be a table")
+    health = HealthConfig(
+        **{key: _optional_positive_int(table, key, "health") for key in _HEALTH_DEFAULTS}
+    )
+    # An inverted pair silently disables the milder of the two: every breach
+    # would trip the same severity. Reject it rather than under-report.
+    for warning, critical, label in (
+        (health.gp_warning_age_seconds, health.gp_critical_age_seconds, "gp"),
+        (health.catalog_warning_age_seconds, health.catalog_critical_age_seconds, "catalog"),
+    ):
+        if critical <= warning:
+            raise ConfigError(
+                f"health.{label}_critical_age_seconds must exceed "
+                f"health.{label}_warning_age_seconds"
+            )
+    if health.free_bytes_critical >= health.free_bytes_warning:
+        raise ConfigError("health.free_bytes_critical must be below health.free_bytes_warning")
+    return health
+
+
 def load_config(path: Path) -> AppConfig:
     """Load and validate an application configuration file."""
 
@@ -271,4 +334,5 @@ def load_config(path: Path) -> AppConfig:
         storage=StorageConfig(root=root, releases_to_keep=retention),
         gp=_load_gp(document),
         catalog=_load_catalog(document),
+        health=_load_health(document),
     )

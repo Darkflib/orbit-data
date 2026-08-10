@@ -125,3 +125,68 @@ def test_production_config_covers_orbit_datasets() -> None:
         "starlink",
         "stations",
     }
+
+
+def test_health_thresholds_default_when_the_table_is_absent(tmp_path: Path) -> None:
+    """An older deployed TOML must still monitor, not fail to start."""
+
+    path = tmp_path / "config.toml"
+    path.write_text(config_text(Path("/srv/data")), encoding="utf-8")
+
+    health = load_config(path).health
+
+    assert health.gp_warning_age_seconds == 21600
+    assert health.gp_critical_age_seconds == 43200
+    assert health.catalog_warning_age_seconds == 129600
+    assert health.catalog_critical_age_seconds == 259200
+    assert health.free_bytes_warning == 2 * 1024**3
+    assert health.free_bytes_critical == 512 * 1024**2
+
+
+def test_health_thresholds_are_overridable(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        config_text(Path("/srv/data")) + "\n[health]\ngp_warning_age_seconds = 900\n",
+        encoding="utf-8",
+    )
+
+    assert load_config(path).health.gp_warning_age_seconds == 900
+
+
+@pytest.mark.parametrize(
+    "table, message",
+    [
+        ("[health]\ngp_warning_age_seconds = 0\n", "gp_warning_age_seconds"),
+        ("[health]\nfree_bytes_warning = -1\n", "free_bytes_warning"),
+        ("[health]\ngp_warning_age_seconds = true\n", "gp_warning_age_seconds"),
+        (
+            "[health]\ngp_warning_age_seconds = 7200\ngp_critical_age_seconds = 3600\n",
+            "gp_critical_age_seconds must exceed",
+        ),
+        (
+            "[health]\ncatalog_warning_age_seconds = 100\ncatalog_critical_age_seconds = 100\n",
+            "catalog_critical_age_seconds must exceed",
+        ),
+        (
+            "[health]\nfree_bytes_warning = 1024\nfree_bytes_critical = 2048\n",
+            "free_bytes_critical must be below",
+        ),
+    ],
+)
+def test_invalid_health_thresholds_are_rejected(tmp_path: Path, table: str, message: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(config_text(Path("/srv/data")) + "\n" + table, encoding="utf-8")
+
+    with pytest.raises(ConfigError) as error:
+        load_config(path)
+
+    assert message in str(error.value)
+
+
+def test_health_must_be_a_table(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    # A bare key has to precede every table to stay at the document root.
+    path.write_text('health = "on"\n' + config_text(Path("/srv/data")), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=r"\[health\] must be a table"):
+        load_config(path)
