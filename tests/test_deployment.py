@@ -104,8 +104,20 @@ def test_web_mount_preserves_release_symlink_targets() -> None:
     assert container["DropCapability"] == "all"
     assert container["AddCapability"] == "NET_BIND_SERVICE"
     assert "root * /srv/orbit-data/public" in caddyfile
+    assert "root * /srv/orbit-data-site" in caddyfile
+    assert "@site path / /site.css /favicon.svg" in caddyfile
     assert 'Access-Control-Allow-Origin "*"' in caddyfile
     assert "@status path /v1/status/*" in caddyfile
+
+
+def test_front_page_links_to_the_published_service_and_source() -> None:
+    page = (ROOT / "deploy" / "site" / "index.html").read_text(encoding="utf-8")
+
+    assert "The data layer" in page
+    assert "/v1/data/manifest.json" in page
+    assert "/v1/status/catalog.json" in page
+    assert "/v1/status/gp.json" in page
+    assert "https://github.com/Darkflib/orbit-data" in page
 
 
 def test_installer_stages_files_and_removes_obsolete_quadlet_timers(
@@ -144,7 +156,12 @@ def test_installer_stages_files_and_removes_obsolete_quadlet_timers(
     assert (install_root / "etc" / "orbit-data" / "Caddyfile").read_text(encoding="utf-8") == (
         ROOT / "deploy" / "Caddyfile"
     ).read_text(encoding="utf-8")
+    for name in ("favicon.svg", "index.html", "site.css"):
+        assert (install_root / "etc" / "orbit-data" / "site" / name).read_text(
+            encoding="utf-8"
+        ) == (ROOT / "deploy" / "site" / name).read_text(encoding="utf-8")
     installed_files = list(install_root.rglob("orbit-data-*"))
     installed_files.append(install_root / "etc" / "orbit-data" / "Caddyfile")
+    installed_files.extend((install_root / "etc" / "orbit-data" / "site").iterdir())
     for path in installed_files:
         assert path.stat().st_mode & 0o777 == 0o644

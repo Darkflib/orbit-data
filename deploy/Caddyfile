@@ -4,27 +4,38 @@
 }
 
 :8080 {
-	root * /srv/orbit-data/public
 	encode zstd gzip
 
+	@site path / /site.css /favicon.svg
 	@health path /healthz
-	respond @health "ok" 200
-
 	@status path /v1/status/*
-	header @status Cache-Control "no-store"
-
 	@gp path /v1/gp/*
-	header @gp Cache-Control "public, max-age=300, stale-if-error=86400"
-
 	@catalog path /v1/data/*
-	header @catalog Cache-Control "public, max-age=3600, stale-if-error=604800"
+
+	handle @site {
+		root * /srv/orbit-data-site
+		file_server
+	}
+
+	handle {
+		root * /srv/orbit-data/public
+
+		respond @health "ok" 200
+
+		header @status Cache-Control "no-store"
+
+		header @gp Cache-Control "public, max-age=300, stale-if-error=86400"
+
+		header @catalog Cache-Control "public, max-age=3600, stale-if-error=604800"
+
+		file_server
+	}
 
 	header {
 		Access-Control-Allow-Origin "*"
+		Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 		Referrer-Policy "no-referrer"
 		X-Content-Type-Options "nosniff"
 	}
-
-	file_server
 	log
 }
