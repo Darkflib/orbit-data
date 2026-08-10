@@ -18,12 +18,16 @@ atomic same-filesystem rename, durable `fsync`, and advisory locks across hosts.
 NFSv4 with locking enabled is a typical fit; verify those semantics for the
 actual storage product before relying on automatic overlap protection.
 
-Install the files as root:
+Install Quadlet sources and native systemd timers in their respective search
+paths. Systemd does not discover `.timer` files from the Quadlet source path:
 
 ```bash
-install -d -m 0755 /etc/orbit-data /etc/containers/systemd
+install -d -m 0755 /etc/orbit-data /etc/containers/systemd /etc/systemd/system
+rm -f /etc/containers/systemd/orbit-data-gp.timer \
+  /etc/containers/systemd/orbit-data-catalog.timer
 install -m 0644 deploy/Caddyfile /etc/orbit-data/Caddyfile
-install -m 0644 deploy/quadlet/* /etc/containers/systemd/
+install -m 0644 deploy/quadlet/*.container /etc/containers/systemd/
+install -m 0644 deploy/systemd/*.timer /etc/systemd/system/
 systemctl daemon-reload
 ```
 
@@ -56,16 +60,23 @@ Initialize and populate the volume before exposing it:
 ```bash
 systemctl start orbit-data-gp.service
 systemctl start orbit-data-catalog.service
-systemctl enable --now orbit-data-web.service
+systemctl start orbit-data-web.service
 systemctl enable --now orbit-data-gp.timer orbit-data-catalog.timer
 curl --fail http://127.0.0.1:8080/healthz
 curl --fail http://127.0.0.1:8080/v1/status/gp.json
 curl --fail http://127.0.0.1:8080/v1/status/catalog.json
 ```
 
-The GP timer waits at least 2 hours 10 minutes after each completed run, safely
-above the service's persisted 2-hour-5-minute request floor. The catalogue runs
-daily at 06:17 UTC with up to 30 minutes of jitter and catches up after downtime.
+Quadlet services are transient generated units and cannot be enabled with
+`systemctl enable`. The web Quadlet's `[Install]` section is applied by the
+generator during boot and `daemon-reload`, so starting it explicitly is enough
+for the initial deployment. The timers are native persistent systemd units and
+are enabled normally.
+
+The explicit first-start commands own the initial refresh. The GP timer then
+waits at least 2 hours 10 minutes after each completed run, safely above the
+service's persisted 2-hour-5-minute request floor. The catalogue runs daily at
+06:17 UTC with up to 30 minutes of jitter and catches up after downtime.
 When the volume provides cross-host advisory locking, the application lock files
 prevent two hosts from writing the same stream concurrently during failover.
 
@@ -86,7 +97,8 @@ curl --fail http://127.0.0.1:8080/v1/data/manifest.json
 ```
 
 For failover, stop the two timers and web service on the old host, move or
-remount the network volume at the same path, then enable them on the replacement.
+remount the network volume at the same path, then start the web service and
+enable the timers on the replacement.
 If the old host cannot be stopped, cross-host volume locks still prevent
 concurrent writers when supported, but traffic should not be switched until the
 replacement health and status endpoints are good.
