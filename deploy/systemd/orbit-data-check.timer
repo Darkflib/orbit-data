@@ -1,0 +1,17 @@
+[Unit]
+Description=Schedule Orbit data freshness and capacity checks
+
+[Timer]
+# Hourly is well inside the 6-hour warning threshold, so a stall is reported
+# in the same hour it crosses the line rather than at the next daily run.
+OnCalendar=hourly
+RandomizedDelaySec=5m
+# Catch up after downtime: the first check on a recovered or failed-over host
+# is exactly the one worth having, because data that aged out during the
+# outage is still stale on the way back up.
+Persistent=true
+AccuracySec=1m
+Unit=orbit-data-check.service
+
+[Install]
+WantedBy=timers.target

@@ -67,6 +67,11 @@ curl --fail http://127.0.0.1:8080/v1/status/gp.json
 curl --fail http://127.0.0.1:8080/v1/status/catalog.json
 ```
 
+Run the population commands promptly. `--start` also enables the hourly health
+check, which reports an empty tree as critical; because a newly enabled timer
+has no stamp file, the first check lands on the next hour boundary rather than
+immediately.
+
 Quadlet services are transient generated units and cannot be enabled with
 `systemctl enable`. The web Quadlet's `[Install]` section is applied by the
 generator during boot and `daemon-reload`, so starting it explicitly is enough
@@ -85,6 +90,42 @@ catalogue path is an atomic relative symlink into `releases/`. It exposes only
 `127.0.0.1:8080`; terminate TLS at the host's existing proxy or load balancer.
 Change `PublishPort` deliberately if Caddy must be directly reachable.
 
+## Monitoring
+
+`orbit-data-check.timer` runs `check-health` hourly. The job exists because
+every other failure signal here is a negative: the GP updater deliberately stops
+and reuses last-known-good data on an upstream 5xx, and the catalogue job
+deliberately reports `unchanged` when nothing moved. Both are correct, both exit
+zero, and both are indistinguishable from a service that quietly stopped
+updating days ago. Age is the only thing that separates them.
+
+Each pass checks free space on the volume, that `public/v1/data/manifest.json`
+still resolves through the release symlink and reports records, how long ago the
+catalogue job last *ran* (`checkedAt`, not `generatedAt` — an unchanged
+catalogue is healthy), and the age of every configured GP dataset's
+`last_success`. A stale dataset's last recorded upstream error is included in
+the message, so a page says `13.0h old; last error: CelesTrak returned HTTP 503`
+rather than just reporting an age.
+
+Warnings are logged and exit zero. Only a critical fails the unit, so alerting
+is an `OnFailure=` drop-in on `orbit-data-check.service`:
+
+```bash
+systemctl edit orbit-data-check.service   # [Unit] OnFailure=your-notifier.service
+journalctl -u orbit-data-check.service -p warning --since today
+systemctl start orbit-data-check.service  # run one pass now
+```
+
+Thresholds live in the optional `[health]` table of `/etc/orbit-data.toml`
+(6h/12h for GP, 36h/72h for the catalogue, 2 GiB/512 MiB free). Every key
+defaults, so a config file predating this job still monitors correctly rather
+than refusing to start — a monitor that fails closed on its own configuration
+goes quiet exactly when it is needed.
+
+The check container mounts the volume read-only and uses `Pull=missing`, unlike
+the updaters' `Pull=newer`: a monitor gated on GHCR reachability reports the
+registry instead of the data, and goes silent when the registry is down.
+
 ## Operations and failover
 
 Useful checks:
@@ -95,6 +136,12 @@ journalctl -u orbit-data-gp.service -u orbit-data-catalog.service --since today
 systemctl status orbit-data-web.service
 curl --fail http://127.0.0.1:8080/v1/data/manifest.json
 ```
+
+The updater containers set `LogDriver=none`. systemd already captures the
+container's stdout into the journal under its own unit, so podman's journald
+driver only added a second copy of every structured line. The web container
+keeps `LogDriver=journald` deliberately: it is long-running, so `podman logs
+orbit-data-web` is worth retaining.
 
 For failover, stop the two timers and web service on the old host, move or
 remount the network volume at the same path, then start the web service and

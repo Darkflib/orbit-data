@@ -118,3 +118,17 @@ minimum_gcat_join_fraction = 0.40
 minimum_magnitude_records = 3000
 minimum_star_records = 800
 minimum_constellation_records = 80
+
+# Thresholds for `check-health`. Every key is optional and falls back to the
+# value shown, so an older deployed copy of this file still monitors correctly.
+# Warnings are logged and exit 0; a critical fails the unit so systemd's
+# OnFailure= can page.
+[health]
+# The GP timer fires every 2h10m, so 6h is roughly three missed runs.
+gp_warning_age_seconds = 21600
+gp_critical_age_seconds = 43200
+# The catalogue is daily with up to 30 minutes of jitter.
+catalog_warning_age_seconds = 129600
+catalog_critical_age_seconds = 259200
+free_bytes_warning = 2147483648
+free_bytes_critical = 536870912

@@ -8,6 +8,7 @@ from typing import Any
 from orbit_data.catalog import CatalogRunResult
 from orbit_data.cli import run
 from orbit_data.gp import GpRunResult
+from orbit_data.health import CRITICAL, OK, WARNING, Check, HealthReport
 from orbit_data.locking import LockUnavailableError
 from tests.support import config_text
 
@@ -83,3 +84,31 @@ def test_sync_catalog_lock_conflict_returns_temporary_failure(
     monkeypatch.setattr("orbit_data.cli.CatalogUpdater", LockedUpdater)
 
     assert run(["--config", str(_config(tmp_path)), "sync-catalog"]) == 75
+
+
+def test_check_health_reports_critical_as_failure(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        "orbit_data.cli.evaluate",
+        lambda _config: HealthReport(checks=(Check("storage", CRITICAL, "1 MiB free"),)),
+    )
+
+    assert run(["--config", str(_config(tmp_path)), "check-health"]) == 1
+
+
+def test_check_health_treats_a_warning_as_success(tmp_path: Path, monkeypatch: Any) -> None:
+    """A warning belongs in the journal, not in an OnFailure= page."""
+
+    monkeypatch.setattr(
+        "orbit_data.cli.evaluate",
+        lambda _config: HealthReport(
+            checks=(Check("gp:active", WARNING, "7.0h old"), Check("storage", OK, "9 GiB free"))
+        ),
+    )
+
+    assert run(["--config", str(_config(tmp_path)), "check-health"]) == 0
+
+
+def test_check_health_runs_against_a_real_tree(tmp_path: Path) -> None:
+    """No status documents yet is a genuine critical, not a crash."""
+
+    assert run(["--config", str(_config(tmp_path)), "check-health"]) == 1

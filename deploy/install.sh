@@ -8,8 +8,9 @@ Usage: deploy/install.sh [--start]
 
 Install the Orbit Data Quadlets, native timers, and Caddy configuration.
 
-  --start  Enable the updater timers and restart the static web service.
-           This does not run the updater jobs for initial population.
+  --start  Enable the updater and health-check timers and restart the static
+           web service. This does not run the updater jobs for initial
+           population.
 EOF
 }
 
@@ -73,7 +74,13 @@ if [ "$start_services" = true ]; then
         exit 1
     fi
 
-    systemctl enable --now orbit-data-gp.timer orbit-data-catalog.timer
+    # The health-check timer has no stamp file on a first install, so enabling
+    # it schedules the next hourly boundary rather than firing immediately —
+    # leaving room for the documented initial population run.
+    systemctl enable --now \
+        orbit-data-gp.timer \
+        orbit-data-catalog.timer \
+        orbit-data-check.timer
     systemctl reset-failed orbit-data-web.service
     systemctl restart orbit-data-web.service
 fi

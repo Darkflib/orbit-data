@@ -11,6 +11,7 @@ from orbit_data import __version__
 from orbit_data.catalog import CatalogUpdater
 from orbit_data.config import ConfigError, load_config
 from orbit_data.gp import GpUpdater
+from orbit_data.health import CRITICAL, OK, WARNING, evaluate
 from orbit_data.locking import LockUnavailableError
 from orbit_data.logging import configure_logging
 from orbit_data.publishing import ensure_storage
@@ -28,6 +29,7 @@ def _parser() -> argparse.ArgumentParser:
     subcommands.add_parser("init-storage", help="create the persistent storage tree")
     subcommands.add_parser("sync-gp", help="refresh due CelesTrak GP datasets")
     subcommands.add_parser("sync-catalog", help="refresh enrichment and sky artifacts")
+    subcommands.add_parser("check-health", help="report published-data freshness and free space")
     return parser
 
 
@@ -88,6 +90,22 @@ def run(  # pylint: disable=too-many-return-statements
             },
         )
         return 0 if catalog_result.successful else 1
+    if args.command == "check-health":
+        report = evaluate(config)
+        for check in report.checks:
+            # One record per check, at the check's own level, so `journalctl
+            # -p warning` shows exactly what is wrong without the healthy noise.
+            LOGGER.log(
+                {OK: logging.INFO, WARNING: logging.WARNING, CRITICAL: logging.ERROR}[
+                    check.severity
+                ],
+                "health check",
+                extra={"check": check.name, "severity": check.severity, "detail": check.detail},
+            )
+        LOGGER.info("health summary", extra={"severity": report.severity, **report.counts()})
+        # Only critical fails the unit: a warning is a heads-up, and a unit that
+        # fails on every warning trains whoever is on call to ignore it.
+        return 0 if report.successful else 1
 
     raise AssertionError(f"unhandled command: {args.command}")
 

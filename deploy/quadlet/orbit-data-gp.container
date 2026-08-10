@@ -13,7 +13,12 @@ NoNewPrivileges=true
 DropCapability=all
 User=10001
 Group=10001
-LogDriver=journald
+# The oneshot updaters log structured JSON to stdout, which systemd already
+# captures from the podman process into the journal under this unit. Podman's
+# own journald driver writes a second copy of every line, so each run appears
+# twice. Suppress the driver and keep systemd's capture, which is the copy that
+# carries the right unit metadata.
+LogDriver=none
 PidsLimit=128
 
 [Service]
