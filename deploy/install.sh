@@ -49,8 +49,9 @@ fi
 quadlet_dir="$install_root/etc/containers/systemd"
 systemd_dir="$install_root/etc/systemd/system"
 config_dir="$install_root/etc/orbit-data"
+site_dir="$config_dir/site"
 
-install -d -m 0755 "$quadlet_dir" "$systemd_dir" "$config_dir"
+install -d -m 0755 "$quadlet_dir" "$systemd_dir" "$config_dir" "$site_dir"
 
 # Clean up timer files installed by versions before native timer packaging.
 rm -f \
@@ -58,6 +59,7 @@ rm -f \
     "$quadlet_dir/orbit-data-catalog.timer"
 
 install -m 0644 "$script_dir/Caddyfile" "$config_dir/Caddyfile"
+install -m 0644 "$script_dir/site/"* "$site_dir/"
 install -m 0644 "$script_dir/quadlet/"*.container "$quadlet_dir/"
 install -m 0644 "$script_dir/systemd/"*.timer "$systemd_dir/"
 

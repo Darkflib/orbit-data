@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Orbit Data publishes the orbital elements, catalogue enrichment and sky data used by Orbit."
+    />
+    <meta name="theme-color" content="#05070d" />
+    <title>Orbit Data</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/site.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <a class="brand" href="/" aria-label="Orbit Data home">
+          <svg class="brand-mark" viewBox="0 0 64 52" aria-hidden="true">
+            <ellipse cx="32" cy="26" rx="28" ry="11" transform="rotate(-48 32 26)" />
+            <circle class="brand-primary" cx="12" cy="10" r="5" />
+            <circle class="brand-secondary" cx="39" cy="32" r="3.5" />
+          </svg>
+          <span>Orbit Data</span>
+        </a>
+        <a
+          class="github-link"
+          href="https://github.com/Darkflib/orbit-data"
+          rel="noreferrer"
+        >
+          GitHub
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M14 4h6v6M20 4l-9 9" />
+            <path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" />
+          </svg>
+        </a>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="page-title">
+          <div class="hero-copy">
+            <h1 id="page-title">The data layer<br />behind Orbit.</h1>
+            <p>
+              Fresh orbital elements, catalogue enrichment and sky data—published as
+              resilient static files for the open web.
+            </p>
+            <div class="actions">
+              <a class="button button-primary" href="/v1/data/manifest.json">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 7h6l2 2h10v10H3z" />
+                  <path d="M3 7V5h7l2 2h7" />
+                </svg>
+                Browse the manifest
+              </a>
+              <a
+                class="button button-secondary"
+                href="https://github.com/Darkflib/orbit-data"
+                rel="noreferrer"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m8 6-5 6 5 6M16 6l5 6-5 6M14 3l-4 18" />
+                </svg>
+                View source
+              </a>
+            </div>
+          </div>
+
+          <div class="orbit-visual" aria-hidden="true">
+            <span class="orbit orbit-one"><i></i><b></b></span>
+            <span class="orbit orbit-two"><i></i></span>
+            <span class="orbit orbit-three"><i></i><b></b></span>
+            <span class="orbit orbit-four"><i></i></span>
+            <span class="orbit-core"></span>
+          </div>
+        </section>
+
+        <nav class="directory" aria-label="Published data">
+          <a class="directory-row" href="/v1/data/manifest.json">
+            <svg class="file-icon" viewBox="0 0 28 32" aria-hidden="true">
+              <path d="M4 1h13l7 7v23H4z" />
+              <path d="M17 1v8h7" />
+            </svg>
+            <span class="directory-name">Catalogue manifest</span>
+            <code>/v1/data/manifest.json</code>
+            <svg class="arrow" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 12h15M14 6l6 6-6 6" />
+            </svg>
+          </a>
+          <a class="directory-row" href="/v1/status/catalog.json">
+            <svg class="file-icon" viewBox="0 0 28 32" aria-hidden="true">
+              <path d="M4 1h13l7 7v23H4z" />
+              <path d="M17 1v8h7" />
+            </svg>
+            <span class="directory-name">Catalogue status</span>
+            <code>/v1/status/catalog.json</code>
+            <svg class="arrow" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 12h15M14 6l6 6-6 6" />
+            </svg>
+          </a>
+          <a class="directory-row" href="/v1/status/gp.json">
+            <svg class="file-icon" viewBox="0 0 28 32" aria-hidden="true">
+              <path d="M4 1h13l7 7v23H4z" />
+              <path d="M17 1v8h7" />
+            </svg>
+            <span class="directory-name">GP status</span>
+            <code>/v1/status/gp.json</code>
+            <svg class="arrow" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 12h15M14 6l6 6-6 6" />
+            </svg>
+          </a>
+        </nav>
+      </main>
+
+      <footer>
+        Built for Orbit <span aria-hidden="true">·</span> Data sourced from CelesTrak and
+        public astronomy catalogues.
+      </footer>
+    </div>
+  </body>
+</html>

@@ -18,18 +18,19 @@ atomic same-filesystem rename, durable `fsync`, and advisory locks across hosts.
 NFSv4 with locking enabled is a typical fit; verify those semantics for the
 actual storage product before relying on automatic overlap protection.
 
-Install the Quadlet sources, native systemd timers, and Caddy configuration.
-The installer is idempotent and removes obsolete timer files from the Quadlet
-source path. By default it only installs files and reloads systemd:
+Install the Quadlet sources, native systemd timers, Caddy configuration, and
+the small static front page served at `/`. The installer is idempotent and
+removes obsolete timer files from the Quadlet source path. By default it only
+installs files and reloads systemd:
 
 ```bash
 sudo deploy/install.sh
 ```
 
 Use `sudo deploy/install.sh --start` to also enable both updater timers and
-restart the static web service. The tracked Caddyfile is replaced on each run;
-keep intentional changes in the repository rather than editing the installed
-copy.
+restart the static web service. The tracked Caddyfile and front-page files are
+replaced on each run; keep intentional changes in the repository rather than
+editing the installed copies.
 
 Ensure the GHCR package is public, or log the rootful Podman service account in
 with a read-only package credential before starting the updater units. Confirm
