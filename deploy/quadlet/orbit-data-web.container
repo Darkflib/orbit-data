@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Container]
 Image=docker.io/library/caddy:2.11.4-alpine
-Pull=newer
+# The version is pinned; do not make restarts depend on Docker Hub availability.
+Pull=missing
 Exec=caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 Volume=/etc/orbit-data/Caddyfile:/etc/caddy/Caddyfile:ro
 # Mount the complete tree: public release symlinks target ../releases.

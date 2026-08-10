@@ -3,6 +3,8 @@
 # pylint: disable=missing-function-docstring
 
 import configparser
+import os
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -68,8 +70,49 @@ def test_web_mount_preserves_release_symlink_targets() -> None:
 
     assert container["Volume"] == "/srv/orbit-data:/srv/orbit-data:ro"
     assert container["PublishPort"].startswith("127.0.0.1:")
+    assert container["Pull"] == "missing"
     assert container["DropCapability"] == "all"
     assert container["AddCapability"] == "NET_BIND_SERVICE"
     assert "root * /srv/orbit-data/public" in caddyfile
     assert 'Access-Control-Allow-Origin "*"' in caddyfile
     assert "@status path /v1/status/*" in caddyfile
+
+
+def test_installer_stages_files_and_removes_obsolete_quadlet_timers(
+    tmp_path: Path,
+) -> None:
+    install_root = tmp_path / "root"
+    obsolete_dir = install_root / "etc" / "containers" / "systemd"
+    obsolete_dir.mkdir(parents=True)
+    for name in ("orbit-data-gp.timer", "orbit-data-catalog.timer"):
+        (obsolete_dir / name).write_text("obsolete", encoding="utf-8")
+
+    environment = os.environ.copy()
+    environment["DESTDIR"] = str(install_root)
+    result = subprocess.run(
+        [str(ROOT / "deploy" / "install.sh")],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        env=environment,
+    )
+
+    assert "deployment files staged" in result.stdout
+    assert not list(obsolete_dir.glob("*.timer"))
+    assert {path.name for path in obsolete_dir.glob("*.container")} == {
+        "orbit-data-gp.container",
+        "orbit-data-catalog.container",
+        "orbit-data-web.container",
+    }
+    installed_timers = install_root / "etc" / "systemd" / "system"
+    assert {path.name for path in installed_timers.glob("*.timer")} == {
+        "orbit-data-gp.timer",
+        "orbit-data-catalog.timer",
+    }
+    assert (install_root / "etc" / "orbit-data" / "Caddyfile").read_text(encoding="utf-8") == (
+        ROOT / "deploy" / "Caddyfile"
+    ).read_text(encoding="utf-8")
+    installed_files = list(install_root.rglob("orbit-data-*"))
+    installed_files.append(install_root / "etc" / "orbit-data" / "Caddyfile")
+    for path in installed_files:
+        assert path.stat().st_mode & 0o777 == 0o644

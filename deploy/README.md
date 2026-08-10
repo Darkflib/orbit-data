@@ -18,18 +18,18 @@ atomic same-filesystem rename, durable `fsync`, and advisory locks across hosts.
 NFSv4 with locking enabled is a typical fit; verify those semantics for the
 actual storage product before relying on automatic overlap protection.
 
-Install Quadlet sources and native systemd timers in their respective search
-paths. Systemd does not discover `.timer` files from the Quadlet source path:
+Install the Quadlet sources, native systemd timers, and Caddy configuration.
+The installer is idempotent and removes obsolete timer files from the Quadlet
+source path. By default it only installs files and reloads systemd:
 
 ```bash
-install -d -m 0755 /etc/orbit-data /etc/containers/systemd /etc/systemd/system
-rm -f /etc/containers/systemd/orbit-data-gp.timer \
-  /etc/containers/systemd/orbit-data-catalog.timer
-install -m 0644 deploy/Caddyfile /etc/orbit-data/Caddyfile
-install -m 0644 deploy/quadlet/*.container /etc/containers/systemd/
-install -m 0644 deploy/systemd/*.timer /etc/systemd/system/
-systemctl daemon-reload
+sudo deploy/install.sh
 ```
+
+Use `sudo deploy/install.sh --start` to also enable both updater timers and
+restart the static web service. The tracked Caddyfile is replaced on each run;
+keep intentional changes in the repository rather than editing the installed
+copy.
 
 Ensure the GHCR package is public, or log the rootful Podman service account in
 with a read-only package credential before starting the updater units. Confirm
@@ -55,13 +55,13 @@ cannot store SELinux labels.
 
 ## First start
 
-Initialize and populate the volume before exposing it:
+Install and start the scheduled services, then initialize and populate the
+volume before exposing it:
 
 ```bash
+sudo deploy/install.sh --start
 systemctl start orbit-data-gp.service
 systemctl start orbit-data-catalog.service
-systemctl start orbit-data-web.service
-systemctl enable --now orbit-data-gp.timer orbit-data-catalog.timer
 curl --fail http://127.0.0.1:8080/healthz
 curl --fail http://127.0.0.1:8080/v1/status/gp.json
 curl --fail http://127.0.0.1:8080/v1/status/catalog.json
@@ -103,6 +103,9 @@ If the old host cannot be stopped, cross-host volume locks still prevent
 concurrent writers when supported, but traffic should not be switched until the
 replacement health and status endpoints are good.
 
-The Quadlets use `Pull=newer`, so every start checks for a newer image. If GHCR
-is temporarily unavailable, the updater start can fail while the static server
-continues serving its last-known-good files; the next timer activation retries.
+The updater Quadlets use `Pull=newer`, so each scheduled start checks GHCR for a
+newer application image. If GHCR is temporarily unavailable, an updater start
+can fail while the static server continues serving its last-known-good files;
+the next timer activation retries. Caddy is version-pinned and uses
+`Pull=missing`, so a web restart uses the local image without depending on
+Docker Hub. Pull a newly pinned Caddy image deliberately during an upgrade.
