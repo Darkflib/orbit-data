@@ -41,7 +41,28 @@
     {
       // The unified PR: every safe update arrives as one branch, one CI run,
       // one review. Without this, each of ~12 dependencies opens its own.
-      matchUpdateTypes: ["minor", "patch", "digest", "pin"],
+      //
+      // This is the complete set of selectable non-major update types.
+      // Renovate's own UpdateTypesOptions is:
+      //   major, minor, patch, pin, digest, pinDigest,
+      //   lockFileMaintenance, rollback, replacement
+      // so the omissions below are the deliberate ones, and nothing else can
+      // silently fall outside the batch:
+      //   - major             -> the rule below, held for approval
+      //   - lockFileMaintenance -> its own monthly branch, configured above
+      //   - rollback          -> a version disappearing upstream is not
+      //                          routine; it should not arrive buried in a
+      //                          batch (and rollbackPrs is off by default)
+      //   - replacement       -> a package being renamed or superseded
+      //                          deserves to be read on its own
+      //
+      // pinDigest is easy to miss and is NOT covered by `pin` or `digest`:
+      // `pin` is range -> exact version, `digest` is one digest -> a newer
+      // one, and `pinDigest` is the tag -> SHA conversion that
+      // helpers:pinGitHubActionDigests performs the first time a workflow
+      // references an action by tag. Omitting it means that pin arrives as
+      // its own branch and PR rather than in this batch.
+      matchUpdateTypes: ["minor", "patch", "pin", "digest", "pinDigest"],
       groupName: "all non-major dependencies",
       groupSlug: "all-minor-patch",
     },
