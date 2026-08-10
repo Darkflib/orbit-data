@@ -1,0 +1,78 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    "config:recommended",
+    // New actions get SHA-pinned on arrival, matching how ci.yml already pins
+    // every `uses:` to a full commit SHA with the tag in a trailing comment.
+    // Renovate updates the SHA and that comment together.
+    "helpers:pinGitHubActionDigests",
+  ],
+
+  timezone: "Europe/London",
+
+  // One batch a week rather than a PR whenever an upstream publishes. Nothing
+  // here is security-critical enough to want same-day churn; anything that is
+  // can be pulled forward from the dependency dashboard.
+  schedule: ["before 6am on monday"],
+
+  // Matches the existing history: feat(deploy):, fix(deploy): — Renovate emits
+  // chore(deps): under this setting.
+  semanticCommits: "enabled",
+
+  // Skip releases younger than this. Cheap insurance against a version that
+  // gets yanked hours after publication, which a bot would otherwise adopt
+  // before a human ever saw it.
+  minimumReleaseAge: "3 days",
+
+  // Off by default in Renovate. The repo has .pre-commit-config.yaml, whose
+  // hook versions otherwise drift out of step with the same tools pinned as
+  // dev dependencies in pyproject.toml.
+  "pre-commit": { enabled: true },
+
+  // Refresh uv.lock on its own cadence so transitive pins do not go stale
+  // between direct-dependency bumps.
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["before 6am on the first day of the month"],
+  },
+
+  packageRules: [
+    {
+      // The unified PR: every safe update arrives as one branch, one CI run,
+      // one review. Without this, each of ~12 dependencies opens its own.
+      matchUpdateTypes: ["minor", "patch", "digest", "pin"],
+      groupName: "all non-major dependencies",
+      groupSlug: "all-minor-patch",
+    },
+    {
+      // Majors stay out of that group deliberately: they are the ones that
+      // break, and bundling one with nine harmless patches means a single
+      // failure blocks all of them. `dependencyDashboardApproval` goes a step
+      // further — a major is listed on the dashboard and only opens a PR once
+      // ticked, so nothing surprising lands unasked. python:3.13-slim -> 3.14
+      // is the obvious one this holds back.
+      matchUpdateTypes: ["major"],
+      dependencyDashboardApproval: true,
+    },
+  ],
+
+  customManagers: [
+    {
+      // Quadlet .container files are not a format Renovate knows, so the
+      // version-pinned Caddy image would otherwise never be flagged.
+      //
+      // The `docker.io/` anchor is load-bearing, not incidental: these same
+      // files carry `Image=ghcr.io/darkflib/orbit-data:latest`, which is this
+      // project's own floating tag and must never be rewritten by a bot. A
+      // looser pattern would match it and start proposing digest pins for our
+      // own builds.
+      customType: "regex",
+      managerFilePatterns: ["/^deploy/quadlet/.*\\.container$/"],
+      matchStrings: [
+        "Image=(?<depName>docker\\.io/[^:\\s]+):(?<currentValue>[^\\s]+)",
+      ],
+      datasourceTemplate: "docker",
+    },
+  ],
+}
