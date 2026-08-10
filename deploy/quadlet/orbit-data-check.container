@@ -6,12 +6,23 @@ Description=Check Orbit data freshness and free space
 
 [Container]
 Image=ghcr.io/darkflib/orbit-data:latest
-# Deliberately NOT Pull=newer, unlike the updaters. A monitor that starts by
-# contacting GHCR fails whenever GHCR is unreachable, which produces an alert
-# about the registry rather than about the data — and, worse, no alert at all
-# about data that really has gone stale. The updaters keep the local image
-# current; this job just uses whatever they left behind.
-Pull=missing
+# Same policy as the updaters, so the monitor never runs a different build of
+# the code it is monitoring.
+#
+# This was Pull=missing, on the reasoning that a monitor should not depend on
+# GHCR being reachable. That was the wrong instrument for a *floating* tag:
+# Pull=missing means "never look again once :latest exists locally", so the
+# first deployment ran whatever image happened to be cached — one predating the
+# check-health subcommand — and would have stayed pinned to it indefinitely.
+# (It remains right for orbit-data-web.container, whose Caddy tag is
+# version-pinned: there, "pull once" is the whole point, and upgrades happen by
+# changing the pin.)
+#
+# If GHCR is unreachable this unit may fail, which reaches OnFailure= as an
+# alert. That is the correct direction to fail: an alert naming the registry is
+# recoverable information, whereas a monitor silently frozen on a stale image
+# reports "healthy" for data it cannot actually evaluate.
+Pull=newer
 Exec=--config /etc/orbit-data.toml check-health
 # Read-only: this job must never be able to repair, rotate, or truncate the
 # tree it is judging.

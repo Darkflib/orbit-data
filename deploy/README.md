@@ -123,9 +123,17 @@ defaults, so a config file predating this job still monitors correctly rather
 than refusing to start — a monitor that fails closed on its own configuration
 goes quiet exactly when it is needed.
 
-The check container mounts the volume read-only and uses `Pull=missing`, unlike
-the updaters' `Pull=newer`: a monitor gated on GHCR reachability reports the
-registry instead of the data, and goes silent when the registry is down.
+The check container mounts the volume read-only, so a monitor can never repair,
+rotate, or truncate the tree it is judging. It uses `Pull=newer`, the same
+policy as the updaters, so it never runs a different build of the code it is
+monitoring. If GHCR is unreachable the unit may fail, which reaches `OnFailure=`
+as an alert — the correct direction to fail, because an alert naming the
+registry is recoverable information whereas a monitor frozen on a stale image
+reports "healthy" for data it cannot actually evaluate.
+
+`Pull=missing` is only appropriate against a version-pinned tag, as on the web
+container. Pairing it with a floating tag like `:latest` pins the unit to
+whatever image happens to be cached on that host.
 
 ## Operations and failover
 
