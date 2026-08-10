@@ -68,6 +68,8 @@ def test_web_mount_preserves_release_symlink_targets() -> None:
 
     assert container["Volume"] == "/srv/orbit-data:/srv/orbit-data:ro"
     assert container["PublishPort"].startswith("127.0.0.1:")
+    assert container["DropCapability"] == "all"
+    assert container["AddCapability"] == "NET_BIND_SERVICE"
     assert "root * /srv/orbit-data/public" in caddyfile
     assert 'Access-Control-Allow-Origin "*"' in caddyfile
     assert "@status path /v1/status/*" in caddyfile
