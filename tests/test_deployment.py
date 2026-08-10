@@ -37,14 +37,19 @@ def test_updaters_share_writable_failover_volume_and_are_oneshot() -> None:
 def test_gp_timer_cannot_undercut_persisted_request_floor() -> None:
     timer = _unit("orbit-data-gp.timer", directory=SYSTEMD_UNITS)["Timer"]
 
+    assert "OnBootSec" not in timer
     assert timer["OnUnitInactiveSec"] == "2h10m"
+    assert timer["RandomizedDelaySec"] == "5m"
+    assert timer["AccuracySec"] == "1m"
     assert timer["Unit"] == "orbit-data-gp.service"
 
 
 def test_catalog_timer_is_persistent_daily_schedule() -> None:
     timer = _unit("orbit-data-catalog.timer", directory=SYSTEMD_UNITS)["Timer"]
 
-    assert timer["OnCalendar"].endswith(" UTC")
+    assert timer["OnCalendar"] == "*-*-* 06:17:00 UTC"
+    assert timer["RandomizedDelaySec"] == "30m"
+    assert timer["AccuracySec"] == "1m"
     assert timer["Persistent"] == "true"
     assert timer["Unit"] == "orbit-data-catalog.service"
 

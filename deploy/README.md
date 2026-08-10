@@ -23,6 +23,8 @@ paths. Systemd does not discover `.timer` files from the Quadlet source path:
 
 ```bash
 install -d -m 0755 /etc/orbit-data /etc/containers/systemd /etc/systemd/system
+rm -f /etc/containers/systemd/orbit-data-gp.timer \
+  /etc/containers/systemd/orbit-data-catalog.timer
 install -m 0644 deploy/Caddyfile /etc/orbit-data/Caddyfile
 install -m 0644 deploy/quadlet/*.container /etc/containers/systemd/
 install -m 0644 deploy/systemd/*.timer /etc/systemd/system/
@@ -71,9 +73,10 @@ generator during boot and `daemon-reload`, so starting it explicitly is enough
 for the initial deployment. The timers are native persistent systemd units and
 are enabled normally.
 
-The GP timer waits at least 2 hours 10 minutes after each completed run, safely
-above the service's persisted 2-hour-5-minute request floor. The catalogue runs
-daily at 06:17 UTC with up to 30 minutes of jitter and catches up after downtime.
+The explicit first-start commands own the initial refresh. The GP timer then
+waits at least 2 hours 10 minutes after each completed run, safely above the
+service's persisted 2-hour-5-minute request floor. The catalogue runs daily at
+06:17 UTC with up to 30 minutes of jitter and catches up after downtime.
 When the volume provides cross-host advisory locking, the application lock files
 prevent two hosts from writing the same stream concurrently during failover.
 

@@ -2,7 +2,6 @@
 Description=Schedule Orbit CelesTrak OMM refreshes
 
 [Timer]
-OnBootSec=5m
 OnUnitInactiveSec=2h10m
 RandomizedDelaySec=5m
 AccuracySec=1m
