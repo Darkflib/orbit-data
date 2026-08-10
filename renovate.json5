@@ -42,7 +42,7 @@
       // The unified PR: every safe update arrives as one branch, one CI run,
       // one review. Without this, each of ~12 dependencies opens its own.
       //
-      // This is the complete set of selectable non-major update types.
+      // This is the complete set of update types included in this batch.
       // Renovate's own UpdateTypesOptions is:
       //   major, minor, patch, pin, digest, pinDigest,
       //   lockFileMaintenance, rollback, replacement
