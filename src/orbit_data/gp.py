@@ -78,6 +78,14 @@ class DatasetCapExceededError(GpUpdateError):
     the shared allowance, which is the whole point of having the cap — alone.
     """
 
+    def __init__(self, message: str, consumed: int) -> None:
+        super().__init__(message)
+        # A lower bound on the true response size: the stream was cut at the
+        # cap, so it is at least this big. Carried on the exception because
+        # persisting it is the only thing that stops the next run re-learning
+        # the same lesson at CelesTrak's expense.
+        self.consumed = consumed
+
 
 class NetworkGpError(GpUpdateError):
     """The request never reached CelesTrak, so no upstream budget was spent.
@@ -132,6 +140,17 @@ class DatasetState:
                 raw = getattr(state, field_name)
                 if raw is not None and datetime.fromisoformat(raw).tzinfo is None:
                     raise ValueError(f"{field_name} has no timezone")
+            # Checked here rather than left to the arithmetic in
+            # `_expected_bytes`: a string or a list in this field would raise
+            # `TypeError` there, which is not a `GpUpdateError` and so escapes
+            # the per-dataset handling in `run` — taking down the whole updater,
+            # the run summary and every later dataset over one corrupt file.
+            # Corruption has to stay isolated to the dataset that owns it.
+            size = state.last_response_bytes
+            if size is not None and (
+                not isinstance(size, int) or isinstance(size, bool) or size < 0
+            ):
+                raise ValueError("last_response_bytes must be a non-negative integer")
             return state
         except (OSError, TypeError, ValueError, orjson.JSONDecodeError) as exc:
             raise GpUpdateError(f"invalid persistent state for {path.stem}: {exc}") from exc
@@ -525,6 +544,14 @@ class GpUpdater:
             self._record_failure(dataset, state, "budget-exceeded", str(exc))
             raise
         except DatasetCapExceededError as exc:
+            # Persist the lower bound before recording the failure. Without it
+            # `last_response_bytes` keeps its old below-cap value — or stays
+            # `None` on a fresh deployment — so `_preflight` admits this dataset
+            # again on the next run, and every run after that re-downloads up to
+            # the cap out of the shared allowance. That is precisely the spend
+            # the cap exists to prevent, and it would recur silently until an
+            # operator noticed the daily figure.
+            state.last_response_bytes = exc.consumed
             self._record_failure(dataset, state, "over-dataset-cap", str(exc))
             raise
         except StopGpRunError as exc:
@@ -795,7 +822,7 @@ class GpUpdater:
             return BudgetExceededError(f"daily byte budget exhausted after {consumed} bytes")
         if bound.source == "dataset":
             return DatasetCapExceededError(
-                f"response exceeded this dataset's {bound.limit}-byte cap"
+                f"response exceeded this dataset's {bound.limit}-byte cap", consumed
             )
         return StopGpRunError(f"response exceeded {bound.limit} bytes")
 

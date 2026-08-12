@@ -813,6 +813,75 @@ maximum_count_drop_fraction = 1
     assert state["last_result"] == "over-dataset-cap"
 
 
+def test_cap_breach_is_not_relearned_at_celestraks_expense(tmp_path: Path) -> None:
+    """A cap overrun must teach the estimator, or it repeats forever.
+
+    Recording only the failure leaves `last_response_bytes` at its old
+    below-cap value — or `None` on a fresh deployment — so the pre-flight check
+    admits the same dataset on every run and each one re-downloads up to the
+    cap out of the shared allowance. Exactly the spend the cap exists to stop.
+    """
+
+    datasets = """
+[[gp.datasets]]
+name = "first"
+query = "GROUP"
+value = "first"
+minimum_records = 1
+maximum_count_drop_fraction = 1
+maximum_bytes = 1024
+"""
+    config = make_config(tmp_path, datasets=datasets)
+    calls = 0
+    current = NOW
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=omm_payload(40))
+
+    updater = GpUpdater(config, transport=_transport(handler), clock=lambda: current)
+    updater.run()
+    assert calls == 1
+    state = orjson.loads((config.storage.root / "state/gp/first.json").read_bytes())
+    # A lower bound, not the true size: the stream was cut at the cap.
+    assert state["last_response_bytes"] > 1024
+
+    current += timedelta(hours=3)
+    result = updater.run()
+
+    # Declined before the connection was opened, so no second download.
+    assert calls == 1
+    assert result.skipped == 1
+    assert not result.budget_exhausted
+
+
+def test_corrupt_response_size_stays_isolated_to_one_dataset(tmp_path: Path) -> None:
+    """A wrong-typed size must not take the whole updater down with it.
+
+    `_expected_bytes` does arithmetic on this field. A string there raises
+    `TypeError`, which is not a `GpUpdateError`, so it would escape the
+    per-dataset handling in `run` and destroy the run summary and every later
+    dataset over one corrupt file.
+    """
+
+    config = make_config(tmp_path, datasets=THREE_DATASETS)
+    state_path = config.storage.root / "state" / "gp" / "first.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_bytes(orjson.dumps({"last_response_bytes": "enormous"}))
+
+    result = GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(200, content=omm_payload())),
+        clock=lambda: NOW,
+    ).run()
+
+    assert result.failed == 1
+    assert result.published == 2
+    assert not result.stopped
+    assert (config.storage.root / "public/v1/status/gp.json").exists()
+
+
 def test_lowered_cap_declines_a_known_oversized_dataset_in_advance(tmp_path: Path) -> None:
     """A cap below a measured size means the request is never made again."""
 
