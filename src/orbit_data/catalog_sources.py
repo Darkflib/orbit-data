@@ -39,9 +39,19 @@ DATA_STATUS = {
 # Most of the catalogue orbits the Earth, but the SATCAT also tracks probes that
 # left it. A heliocentric Mariner has no Earth track to be missing in the first
 # place, which is a different answer to "where is it?" than a withheld one.
+#
+# Transcribed from the ORBIT_CENTER table at
+# https://celestrak.org/satcat/satcat-format.php. `CO` does not appear in the
+# current SATCAT but is documented, so it is mapped rather than waiting to be
+# discovered as a raw code. The documented form is "ELx = Earth Lagrange", and
+# the bare `EL` really does occur (Chang'e-6), so it maps to the general case.
+# A docked object carries its host's NORAD_CAT_ID here instead of a code, which
+# is why an unrecognised value falls through as itself rather than being lost.
 ORBIT_CENTERS = {
     "AS": "asteroid",
+    "CO": "comet",
     "EA": "earth",
+    "EL": "earth-lagrange",
     "EL1": "earth-sun-l1",
     "EL2": "earth-sun-l2",
     "EL3": "earth-sun-l3",

@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from orbit_data.catalog_sources import (
+    ORBIT_CENTERS,
     estimate_magnitude,
     merge_catalogues,
     parse_bsc5,
@@ -112,7 +113,40 @@ def test_satcat_parser_explains_missing_elements() -> None:
     assert records["938"]["orbitCenter"] == "sun"
     assert records["938"]["approximateOrbit"] is None
     assert records["25544"]["dataStatus"] is None
+    # A docked object carries its host's catalog number rather than a code, so
+    # the unmapped value must survive instead of being dropped.
     assert records["49044"]["orbitCenter"] == "25544"
+
+
+def test_orbit_centre_map_matches_celestrak_documentation() -> None:
+    """Pins the transcription of the published ORBIT_CENTER table.
+
+    `CO` has no rows in the current SATCAT, so nothing else here would notice if
+    it were missing until a comet orbiter showed up as a raw code in the served
+    tree. The bare `EL` does occur (Chang'e-6) despite the documented form being
+    "ELx".
+    """
+
+    documented = {
+        "AS": "asteroid",
+        "CO": "comet",
+        "EA": "earth",
+        "EM": "earth-moon-barycenter",
+        "JU": "jupiter",
+        "MA": "mars",
+        "ME": "mercury",
+        "MO": "moon",
+        "NE": "neptune",
+        "PL": "pluto",
+        "SA": "saturn",
+        "SS": "solar-system-escape",
+        "SU": "sun",
+        "UR": "uranus",
+        "VE": "venus",
+    }
+
+    assert documented.items() <= ORBIT_CENTERS.items()
+    assert ORBIT_CENTERS["EL"] == "earth-lagrange"
 
 
 def test_gcat_parser() -> None:
