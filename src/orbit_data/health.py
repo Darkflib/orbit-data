@@ -153,6 +153,12 @@ def _check_gp_run(config: AppConfig, now: datetime) -> Check:
     if document.get("blocked"):
         reason = document.get("stop_reason") or "refused"
         return Check("gp-run", CRITICAL, f"CelesTrak is refusing requests ({reason}); {detail}")
+    if document.get("budget_exhausted"):
+        # A warning, not a critical: last-known-good data is still being served
+        # and the allowance refills as the 24-hour window rolls. But it must not
+        # read as healthy — datasets are being skipped, and the only other
+        # symptom is staleness that appears many hours later.
+        return Check("gp-run", WARNING, f"daily byte budget spent; {detail}")
     age = _age_seconds(document.get("checked_at"), now)
     if age is None:
         # A summary written by a release predating `checked_at`. The per-dataset

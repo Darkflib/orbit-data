@@ -152,6 +152,30 @@ def test_blocked_gp_run_is_critical_before_anything_goes_stale(tmp_path: Path) -
     assert not evaluate(config, now=NOW).successful
 
 
+def test_spent_byte_budget_warns_rather_than_reading_as_healthy(tmp_path: Path) -> None:
+    """`skipped` also counts "not due yet", so it cannot carry this signal."""
+
+    config = make_config(tmp_path)
+    _healthy(config)
+    _write(
+        config.storage.root / "public" / "v1" / "status" / "gp.json",
+        {
+            "checked_at": NOW.isoformat(),
+            "published": 2,
+            "daily_bytes": 84 * 1024**2,
+            "blocked": False,
+            "budget_exhausted": True,
+        },
+    )
+
+    check = _by_name(config, "gp-run")
+
+    assert check.severity == WARNING
+    # Last-known-good data is still served and the window refills on its own,
+    # so this must not fail the unit.
+    assert evaluate(config, now=NOW).successful
+
+
 def test_missing_gp_run_summary_is_critical(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     _healthy(config)

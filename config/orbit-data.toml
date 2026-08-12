@@ -9,8 +9,9 @@ releases_to_keep = 3
 base_url = "https://celestrak.org/NORAD/elements/gp.php"
 user_agent = "orbit-data/0.1 (+https://github.com/Darkflib/orbit-data)"
 # CelesTrak's floor is 2 hours per query, but the timer now fires every 6 hours
-# because the underlying 18 SDS feed only updates 2-3 times a day. This stays at
-# the documented floor so an out-of-band `sync-gp` cannot undercut it.
+# because the underlying 18 SDS feed only updates 2-3 times a day. 7500s keeps a
+# five-minute cushion above that 2h floor, so an out-of-band `sync-gp` cannot
+# undercut it even with clock skew across a volume failover.
 minimum_interval_seconds = 7500
 # A connect timeout means CelesTrak never received the request, so it costs them
 # nothing and does not spend the floor above. Retry in minutes instead of

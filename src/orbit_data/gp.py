@@ -51,6 +51,16 @@ class StopGpRunError(GpUpdateError):
     """An upstream response requires stopping all remaining queries."""
 
 
+class BudgetExceededError(GpUpdateError):
+    """The rolling daily allowance ran out mid-stream.
+
+    Not a `StopGpRunError`: hitting the backstop is the design working, not an
+    upstream fault. The dataset fails, the run continues, and every remaining
+    dataset is skipped by the same budget check that would have caught this one
+    had its size been knowable in advance.
+    """
+
+
 class NetworkGpError(GpUpdateError):
     """The request never reached CelesTrak, so no upstream budget was spent.
 
@@ -121,6 +131,10 @@ class GpRunResult:
     downloaded_bytes: int = 0
     daily_bytes: int = 0
     blocked: bool = False
+    # Distinct from `skipped`, which also counts datasets that were simply not
+    # due. Without this a spent allowance is indistinguishable from a quiet,
+    # healthy run until the per-dataset ages age out many hours later.
+    budget_exhausted: bool = False
     stop_reason: str | None = None
 
     @property
@@ -240,7 +254,7 @@ class GpUpdater:
         """Run every due query while holding the single-writer GP lock."""
 
         attempted = published = skipped = failed = 0
-        stopped = blocked = False
+        stopped = blocked = budget_exhausted = False
         stop_reason: str | None = None
         network_failures = 0
         # Per-run, not per-updater: `sync-gp` builds one updater, but tests and
@@ -266,8 +280,10 @@ class GpUpdater:
                 },
             ) as client:
                 for dataset in self._ordered_datasets():
-                    if ledger.used() >= budget:
+                    remaining = budget - ledger.used()
+                    if remaining <= 0:
                         skipped += 1
+                        budget_exhausted = True
                         LOGGER.warning(
                             "skipping GP dataset: daily byte budget spent",
                             extra={
@@ -278,7 +294,19 @@ class GpUpdater:
                         )
                         continue
                     try:
-                        outcome = self._update_dataset(client, dataset, ledger)
+                        outcome = self._update_dataset(client, dataset, ledger, remaining)
+                    except BudgetExceededError as exc:
+                        # The stream was cut at the ceiling rather than allowed
+                        # to overshoot it. Not a stop: the loop's own budget
+                        # check skips whatever is left.
+                        attempted += 1
+                        failed += 1
+                        budget_exhausted = True
+                        LOGGER.warning(
+                            "GP dataset aborted at the daily byte budget",
+                            extra={"dataset": dataset.name, "error": str(exc)},
+                        )
+                        continue
                     except NetworkGpError as exc:
                         attempted += 1
                         failed += 1
@@ -344,6 +372,7 @@ class GpUpdater:
                 downloaded_bytes=self._downloaded,
                 daily_bytes=ledger.used(),
                 blocked=blocked,
+                budget_exhausted=budget_exhausted,
                 stop_reason=stop_reason,
             )
             self._write_summary(result, now=started)
@@ -382,7 +411,11 @@ class GpUpdater:
         return [dataset for _, dataset in sorted(enumerate(self.config.gp.datasets), key=key)]
 
     def _update_dataset(
-        self, client: httpx.Client, dataset: GpDatasetConfig, ledger: BandwidthLedger
+        self,
+        client: httpx.Client,
+        dataset: GpDatasetConfig,
+        ledger: BandwidthLedger,
+        budget_remaining: int,
     ) -> str:
         state_path = self._state_path(dataset)
         state = DatasetState.load(state_path)
@@ -406,20 +439,34 @@ class GpUpdater:
 
         url = self._url(dataset)
         try:
-            status, payload = self._download(client, url)
+            status, payload = self._download(
+                client, url, ledger=ledger, now=now, budget_remaining=budget_remaining
+            )
+        except BudgetExceededError as exc:
+            self._record_failure(dataset, state, "budget-exceeded", str(exc))
+            raise
         except StopGpRunError as exc:
             self._record_failure(dataset, state, "response-too-large", str(exc))
             raise
-        except httpx.HTTPError as exc:
-            # CelesTrak's application never saw this request, so none of their
-            # budget was spent and the two-hour floor does not apply. Surrender
-            # minutes to a dropped packet, not a whole cycle.
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # Failed before the request went out, so CelesTrak's application
+            # never saw it, none of their budget was spent, and the two-hour
+            # floor does not apply. Surrender minutes to a dropped packet rather
+            # than a whole cycle. This is the failure the production incident hit.
             state.retry_after = self._instant(now, self.config.gp.network_retry_interval_seconds)
             self._record_failure(dataset, state, "network-error", str(exc))
             raise NetworkGpError(f"network failure: {exc}") from exc
+        except httpx.HTTPError as exc:
+            # Everything else — a read timeout, a reset part-way through the
+            # body, a protocol error — happened *after* the request was
+            # transmitted. CelesTrak received it and may well have served it in
+            # full, so it cost them a response and counts against their
+            # one-download-per-update policy. Keep the full floor: re-asking in
+            # fifteen minutes for a dataset they already sent is exactly the
+            # behaviour that earns a firewall entry.
+            self._record_failure(dataset, state, "network-error", str(exc))
+            raise NetworkGpError(f"network failure after request: {exc}") from exc
 
-        self._downloaded += len(payload)
-        ledger.record(now, len(payload))
         state.last_http_status = status
         if status == 403:
             return self._handle_forbidden(dataset, state, payload)
@@ -455,7 +502,15 @@ class GpUpdater:
         """Separate "you already have this" from "you are being refused"."""
 
         detail = self._describe(403, body)
-        if _UNCHANGED_MARKER in detail.lower():
+        # Classify against the whole captured body, not the 500-character
+        # summary. `_ERROR_DETAIL_CHARS` is a presentation limit; letting it
+        # decide the outcome means a longer preamble around the same sentence
+        # turns the quietest possible response into a stopped run and a critical
+        # health check.
+        # Whitespace is collapsed first: CelesTrak hard-wraps this message, so a
+        # line break landing inside the marker must not change the verdict.
+        full = " ".join(body.decode("utf-8", errors="replace").split()).lower()
+        if _UNCHANGED_MARKER in full:
             state.last_result = "not-updated"
             state.error = None
             self._save_state(dataset, state)
@@ -475,33 +530,69 @@ class GpUpdater:
         )
         return "forbidden"
 
-    def _download(self, client: httpx.Client, url: str) -> tuple[int, bytes]:
-        chunks: list[bytes] = []
-        length = 0
-        with client.stream("GET", url) as response:
-            if response.status_code != 200:
-                # CelesTrak states its reason — which GROUP, which limit, which
-                # IP — in the refusal body. Discarding it, as this used to, is
-                # why a firewall block and a routine "you already have it" were
-                # indistinguishable in the journal.
-                return response.status_code, self._read_capped(response, _ERROR_BODY_BYTES)
-            for chunk in response.iter_bytes():
-                length += len(chunk)
-                if length > self.config.gp.maximum_response_bytes:
-                    raise StopGpRunError(
-                        f"response exceeded {self.config.gp.maximum_response_bytes} bytes"
-                    )
-                chunks.append(chunk)
-        return response.status_code, b"".join(chunks)
+    def _download(
+        self,
+        client: httpx.Client,
+        url: str,
+        *,
+        ledger: BandwidthLedger,
+        now: datetime,
+        budget_remaining: int,
+    ) -> tuple[int, bytes]:
+        """Stream one response, accounting every byte that crosses the wire.
 
-    @staticmethod
-    def _read_capped(response: httpx.Response, limit: int) -> bytes:
-        body = bytearray()
-        for chunk in response.iter_bytes():
-            body.extend(chunk)
-            if len(body) >= limit:
-                break
-        return bytes(body[:limit])
+        The ledger is updated in `finally`, not on the way out of the success
+        path. An oversized body or a mid-stream read error has already cost
+        CelesTrak everything it sent, and a backstop that under-counts precisely
+        in the heaviest cases is not a backstop: two aborted 64 MiB responses
+        would exceed the daily threshold while `daily_bytes` still read zero.
+
+        The remaining allowance also bounds the stream itself. Checking the
+        budget only between datasets leaves the ceiling overshootable by one
+        whole response, which at the configured 64 MiB response limit is most of
+        a day's allowance.
+        """
+
+        limit = min(self.config.gp.maximum_response_bytes, budget_remaining)
+        consumed = 0
+        try:
+            with client.stream("GET", url) as response:
+                if response.status_code != 200:
+                    # CelesTrak states its reason — which GROUP, which limit,
+                    # which IP — in the refusal body. Discarding it, as this used
+                    # to, is why a firewall block and a routine "you already have
+                    # it" were indistinguishable in the journal.
+                    body = bytearray()
+                    for chunk in response.iter_bytes():
+                        consumed += len(chunk)
+                        body.extend(chunk)
+                        if len(body) >= _ERROR_BODY_BYTES:
+                            break
+                    return response.status_code, bytes(body[:_ERROR_BODY_BYTES])
+                chunks: list[bytes] = []
+                for chunk in response.iter_bytes():
+                    consumed += len(chunk)
+                    if consumed > limit:
+                        raise self._oversized(limit, consumed)
+                    chunks.append(chunk)
+                return response.status_code, b"".join(chunks)
+        finally:
+            self._downloaded += consumed
+            if consumed:
+                ledger.record(now, consumed)
+
+    def _oversized(self, limit: int, consumed: int) -> GpUpdateError:
+        """Name whichever ceiling the stream actually hit.
+
+        A genuinely huge GROUP and an exhausted daily allowance both abort the
+        stream, but they mean opposite things: the first is a dataset problem
+        worth stopping the run over, the second is the backstop working as
+        designed and the remaining datasets simply have nothing left to spend.
+        """
+
+        if limit < self.config.gp.maximum_response_bytes:
+            return BudgetExceededError(f"daily byte budget exhausted after {consumed} bytes")
+        return StopGpRunError(f"response exceeded {limit} bytes")
 
     @staticmethod
     def _describe(status: int, body: bytes) -> str:

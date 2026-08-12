@@ -2,7 +2,7 @@
 
 # pylint: disable=missing-function-docstring
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -505,6 +505,115 @@ def test_byte_budget_window_rolls_off_after_a_day(tmp_path: Path) -> None:
     # Reusing one updater must not make the former accumulate.
     assert second.downloaded_bytes == first.downloaded_bytes == len(payload)
     assert second.daily_bytes == len(payload)
+
+
+def test_oversized_response_bytes_still_reach_the_ledger(tmp_path: Path) -> None:
+    """Bytes pulled before an abort were still sent, and still count.
+
+    Accounting only on the success path under-counts precisely in the heaviest
+    cases: two aborted 64 MiB responses would cross CelesTrak's daily threshold
+    while `daily_bytes` reported zero.
+    """
+
+    payload = omm_payload(20)
+    config = make_config(tmp_path, maximum_response_bytes=1024)
+
+    result = GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(200, content=payload)),
+        clock=lambda: NOW,
+    ).run()
+
+    assert result.stopped
+    assert result.daily_bytes > 0
+    assert result.downloaded_bytes > 0
+    state = orjson.loads((config.storage.root / "state/gp/active.json").read_bytes())
+    assert state["last_result"] == "response-too-large"
+
+
+def test_bytes_from_a_mid_stream_failure_still_reach_the_ledger(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        def stream() -> Iterator[bytes]:
+            yield b"[" + b"x" * 4000
+            raise httpx.ReadError("connection reset", request=request)
+
+        return httpx.Response(200, content=stream())
+
+    result = GpUpdater(config, transport=_transport(handler), clock=lambda: NOW).run()
+
+    assert result.failed == 1
+    assert result.daily_bytes >= 4000
+
+
+def test_post_connect_failure_keeps_the_full_upstream_floor(tmp_path: Path) -> None:
+    """A read timeout means CelesTrak received — and likely served — the request.
+
+    Re-asking fifteen minutes later for a dataset they already sent is exactly
+    the behaviour their one-download-per-update policy firewalls. Only a
+    connect-phase failure earns the shortened retry.
+    """
+
+    config = make_config(tmp_path)
+    calls = 0
+    current = NOW
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    updater = GpUpdater(config, transport=_transport(handler), clock=lambda: current)
+    updater.run()
+    current += timedelta(minutes=30)
+
+    assert updater.run().skipped == 1
+    assert calls == 1
+
+
+def test_budget_caps_the_stream_rather_than_overshooting(tmp_path: Path) -> None:
+    """`maximum_daily_bytes` is a ceiling, not a checkpoint between datasets.
+
+    Checking only between datasets leaves it overshootable by one whole
+    response — at the configured 64 MiB response limit, most of a day's
+    allowance.
+    """
+
+    payload = omm_payload(20)
+    config = make_config(tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(payload) // 2)
+
+    result = GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(200, content=payload)),
+        clock=lambda: NOW,
+    ).run()
+
+    assert result.published == 0
+    assert result.budget_exhausted
+    assert not result.stopped
+    # The stream was cut at the ceiling instead of being allowed through whole.
+    assert result.daily_bytes <= len(payload)
+    state = orjson.loads((config.storage.root / "state/gp/first.json").read_bytes())
+    assert state["last_result"] == "budget-exceeded"
+
+
+def test_wrapped_unchanged_marker_is_still_recognised(tmp_path: Path) -> None:
+    """Classification must not hinge on the 500-character display cap."""
+
+    config = make_config(tmp_path)
+    body = b"<html><body><p>" + b"padding. " * 200 + UNCHANGED_403 + b"</p></body></html>"
+
+    result = GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(403, content=body)),
+        clock=lambda: NOW,
+    ).run()
+
+    assert result.successful
+    assert not result.blocked
+    state = orjson.loads((config.storage.root / "state/gp/active.json").read_bytes())
+    assert state["last_result"] == "not-updated"
 
 
 def test_unreadable_bandwidth_ledger_fails_open(tmp_path: Path) -> None:
