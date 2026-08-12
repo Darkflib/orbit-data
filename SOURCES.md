@@ -5,7 +5,10 @@
 record the winning source for each field in their `_sources` object.
 
 - **CelesTrak SATCAT** — T.S. Kelso, [celestrak.org](https://celestrak.org/),
-  used with attribution. Fetched from `https://celestrak.org/pub/satcat.csv`.
+  used with attribution. Fetched from `https://celestrak.org/pub/satcat.csv`. It
+  is the only source that says why an object has no element set, and the only
+  one that describes the orbit of an object whose elements are withheld, so
+  `dataStatus`, `orbitCenter` and `approximateOrbit` come from it alone.
 - **GCAT** — General Catalog of Artificial Space Objects, © Jonathan McDowell,
   [planet4589.org/space/gcat](https://planet4589.org/space/gcat/), licensed
   [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Fetched from the
