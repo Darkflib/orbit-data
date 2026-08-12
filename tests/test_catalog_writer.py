@@ -17,6 +17,7 @@ def test_artifacts_are_bucketed_and_timestamp_independent(tmp_path: Path) -> Non
             "name": "NEW",
             "magSource": "estimate",
             "stdMag": 5.5,
+            "dataStatus": "no-elements-available",
         },
     }
     first = build_catalog_artifacts(
@@ -46,6 +47,11 @@ def test_artifacts_are_bucketed_and_timestamp_independent(tmp_path: Path) -> Non
     assert "enrichment/100.json" in first.files
     index = orjson.loads(first.files["catalog-index.json"])
     assert index[1]["magEst"] == 1
+    # Sparse, so a client can flag "no element set" beside a search result
+    # without fetching an enrichment shard per hit. Absent for the vast
+    # majority, which is also what a currently-deployed index looks like.
+    assert "dataStatus" not in index[0]
+    assert index[1]["dataStatus"] == "no-elements-available"
 
     first.write_to(tmp_path)
     assert (tmp_path / "manifest.json").exists()

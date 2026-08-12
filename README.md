@@ -124,6 +124,26 @@ The job will not publish if a required source has never been cached, a parser or
 record-count safety gate fails, or the merged catalogue drops unexpectedly. If
 the normalized content has not changed, no new release is created.
 
+### Objects with no element set
+
+CelesTrak publishes no GP data at all for some catalogued objects, and in most
+of those cases never will: the US government withholds elements for its
+classified payloads — USA 224 (NORAD 37348) is one of roughly 700 — and a
+heliocentric probe such as Mariner 4 has no Earth orbit to publish. An empty GP
+track is otherwise indistinguishable from a broken fetch, so every enrichment
+record states what SATCAT knows:
+
+- `dataStatus` gives SATCAT's reason for the absence — `no-elements-available`,
+  `no-current-elements`, or `no-initial-elements` — and is `null` when elements
+  are available;
+- `orbitCenter` names the body the object orbits, `earth` for all but a few
+  hundred. Objects docked to another catalogued object carry that object's NORAD
+  ID, and any code CelesTrak adds later is published raw rather than dropped;
+- `approximateOrbit` carries SATCAT's own `periodMinutes`, `inclinationDeg`,
+  `apogeeKm` and `perigeeKm`, which survive for most withheld Earth-orbiting
+  payloads even though their element set does not, and is `null` when SATCAT
+  describes no orbit.
+
 Report on the published tree without touching it:
 
 ```bash
