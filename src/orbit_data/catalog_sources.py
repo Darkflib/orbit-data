@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+from collections.abc import Mapping
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,40 @@ OPS_STATUS = {
     "X": "extended",
     "D": "decayed",
     "?": "unknown",
+}
+# SATCAT states why an object has no element set. Without it a withheld payload
+# (every US classified satellite carries NEA, and always will) is indistinguishable
+# from a broken GP fetch, so the reason is carried through to the client. These
+# three exhaust the documented codes; a fourth would carry no meaning downstream,
+# so it is dropped rather than published as a value no client can interpret.
+DATA_STATUS = {
+    "NCE": "no-current-elements",
+    "NIE": "no-initial-elements",
+    "NEA": "no-elements-available",
+}
+# Most of the catalogue orbits the Earth, but the SATCAT also tracks probes that
+# left it. A heliocentric Mariner has no Earth track to be missing in the first
+# place, which is a different answer to "where is it?" than a withheld one.
+ORBIT_CENTERS = {
+    "AS": "asteroid",
+    "EA": "earth",
+    "EL1": "earth-sun-l1",
+    "EL2": "earth-sun-l2",
+    "EL3": "earth-sun-l3",
+    "EL4": "earth-sun-l4",
+    "EL5": "earth-sun-l5",
+    "EM": "earth-moon-barycenter",
+    "JU": "jupiter",
+    "MA": "mars",
+    "ME": "mercury",
+    "MO": "moon",
+    "NE": "neptune",
+    "PL": "pluto",
+    "SA": "saturn",
+    "SS": "solar-system-escape",
+    "SU": "sun",
+    "UR": "uranus",
+    "VE": "venus",
 }
 MONTHS = {
     "Jan": "01",
@@ -71,6 +106,34 @@ def _number(value: str | None, *, positive: bool = False) -> float | None:
     return number
 
 
+def _orbit_center(value: str | None) -> str | None:
+    """Name the body an object orbits, keeping unrecognized codes rather than losing them."""
+
+    code = (value or "").strip().upper()
+    if not code:
+        return None
+    # Objects docked to another catalogued object carry that object's NORAD ID
+    # here instead of a body code, and CelesTrak adds centres as missions reach
+    # new bodies, so anything unmapped is published raw for the client to show.
+    return ORBIT_CENTERS.get(code, code)
+
+
+def _approximate_orbit(row: Mapping[str, Any]) -> Record | None:
+    """Return SATCAT's own orbit summary, which survives when elements do not."""
+
+    orbit = {
+        "periodMinutes": _number(row.get("PERIOD")),
+        "inclinationDeg": _number(row.get("INCLINATION")),
+        "apogeeKm": _number(row.get("APOGEE")),
+        "perigeeKm": _number(row.get("PERIGEE")),
+    }
+    # Period and inclination move together in SATCAT: an object with neither has
+    # no orbit described here at all, as opposed to one described imprecisely.
+    if orbit["periodMinutes"] is None and orbit["inclinationDeg"] is None:
+        return None
+    return orbit
+
+
 def parse_satcat(payload: bytes) -> RecordMap:
     """Parse the CelesTrak SATCAT CSV into records keyed by NORAD ID."""
 
@@ -109,6 +172,9 @@ def parse_satcat(payload: bytes) -> RecordMap:
             "decayDate": _iso_date(row.get("DECAY_DATE")),
             "rcsValue_m2": rcs,
             "rcsSize": rcs_size,
+            "dataStatus": DATA_STATUS.get((row.get("DATA_STATUS_CODE") or "").strip().upper()),
+            "orbitCenter": _orbit_center(row.get("ORBIT_CENTER")),
+            "approximateOrbit": _approximate_orbit(row),
         }
     return records
 
@@ -382,6 +448,14 @@ def merge_catalogues(  # pylint: disable=too-many-locals
             _set_field(record, sources, field, (("gcat", extra.get(field)),))
         for field in ("rcsSize", "rcsValue_m2"):
             _set_field(record, sources, field, (("satcat", base.get(field)),))
+        # These three are emitted even when null, unlike every other field here:
+        # "SATCAT publishes elements for this object" is exactly the assertion a
+        # client needs to tell a classified payload from a failed fetch, and an
+        # absent key cannot make it. Only a stated value earns a `_sources` entry.
+        for field in ("dataStatus", "orbitCenter", "approximateOrbit"):
+            record[field] = base.get(field)
+            if record[field] is not None:
+                sources[field] = "satcat"
         _set_field(record, sources, "stdMag", (("mmccants", magnitude.get("stdMag")),))
         if "stdMag" in record:
             record["magSource"] = "mmccants"
