@@ -70,6 +70,12 @@ def build_catalog_artifacts(
             "rcsSize": record.get("rcsSize"),
             "stdMag": record.get("stdMag"),
             **({"magEst": 1} if record.get("magSource") == "estimate" else {}),
+            # Sparse, like `magEst`: ~978 of 36,000 records carry this, and the
+            # index is fetched whole. It is here rather than left to the
+            # enrichment shard because search runs against the index alone — a
+            # client cannot say "no element set" beside a result without
+            # fetching the shard for every hit first.
+            **({"dataStatus": record["dataStatus"]} if record.get("dataStatus") else {}),
         }
         for record in ordered
     ]
