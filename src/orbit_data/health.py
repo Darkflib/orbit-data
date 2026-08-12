@@ -150,6 +150,13 @@ def _check_gp_run(config: AppConfig, now: datetime) -> Check:
         return Check("gp-run", CRITICAL, "run summary missing or unreadable")
     used_mib = _as_int(document.get("daily_bytes")) / 1024**2
     detail = f"{_as_int(document.get('published'))} published, {used_mib:.1f} MiB/24h"
+    # Quote the allowance beside the usage now that the run summary carries it.
+    # "33.0 MiB/24h" needs the reader to already know the budget to mean
+    # anything, and the one thing an operator woken by this check will not have
+    # to hand is the contents of a TOML on the failover host.
+    budget = _as_int(document.get("budget_bytes"))
+    if budget:
+        detail = f"{detail} of {budget / 1024**2:.0f} MiB"
     if document.get("blocked"):
         reason = document.get("stop_reason") or "refused"
         return Check("gp-run", CRITICAL, f"CelesTrak is refusing requests ({reason}); {detail}")
