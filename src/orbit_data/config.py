@@ -40,6 +40,8 @@ class GpDatasetConfig:
     maximum_count_drop_fraction: float
 
 
+# Every field is an independently tunable retrieval or politeness bound.
+# pylint: disable=too-many-instance-attributes
 @dataclass(frozen=True, slots=True)
 class GpConfig:
     """CelesTrak GP retrieval policy."""
@@ -47,10 +49,15 @@ class GpConfig:
     base_url: str
     user_agent: str
     minimum_interval_seconds: int
+    network_retry_interval_seconds: int
+    maximum_daily_bytes: int
     connect_timeout_seconds: float
     read_timeout_seconds: float
     maximum_response_bytes: int
     datasets: tuple[GpDatasetConfig, ...]
+
+
+# pylint: enable=too-many-instance-attributes
 
 
 # Each field is a separately configurable safety threshold or source setting.
@@ -129,6 +136,23 @@ def _positive_number(table: dict[str, Any], key: str, section: str) -> float:
     return float(value)
 
 
+def _optional_bounded_int(
+    table: dict[str, Any], key: str, section: str, *, default: int, minimum: int
+) -> int:
+    """Read an integer that an older deployed configuration may not carry.
+
+    Deliberately a default rather than a required key, for the same reason the
+    `[health]` thresholds are: a safety bound that refuses to load against a
+    TOML predating it takes the whole job offline exactly when the bound was
+    supposed to protect it.
+    """
+
+    value = table.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise ConfigError(f"{section}.{key} must be an integer of at least {minimum}")
+    return value
+
+
 def _gp_dataset(raw: Any, index: int, names: set[str]) -> GpDatasetConfig:
     section = f"gp.datasets[{index}]"
     if not isinstance(raw, dict):
@@ -177,6 +201,26 @@ def _load_gp(document: dict[str, Any]) -> GpConfig:
     interval = table.get("minimum_interval_seconds")
     if not isinstance(interval, int) or isinstance(interval, bool) or interval < 7200:
         raise ConfigError("gp.minimum_interval_seconds must be an integer of at least 7200")
+    retry_interval = _optional_bounded_int(
+        table, "network_retry_interval_seconds", "gp", default=900, minimum=60
+    )
+    # A network failure means CelesTrak's application never saw the request, so
+    # the two-hour floor was not spent. That licences an earlier retry, but only
+    # an earlier one: a shorter-is-fine rule that could be configured *longer*
+    # than the floor would quietly make the floor the smaller of the two.
+    if retry_interval > interval:
+        raise ConfigError(
+            "gp.network_retry_interval_seconds must not exceed gp.minimum_interval_seconds"
+        )
+    # CelesTrak firewalls IP addresses pulling more than 100 MB/day and gp.php
+    # serves no compression, so the whole budget is spent in uncompressed
+    # responses. Default well under the documented limit: this is a backstop for
+    # a misedited dataset list, not the primary control (that is the timer).
+    # The floor only rejects nonsense: a deliberately tiny allowance is a valid
+    # way to hold fetching while an operator sorts out a block.
+    maximum_daily_bytes = _optional_bounded_int(
+        table, "maximum_daily_bytes", "gp", default=80 * 1024**2, minimum=1024
+    )
     maximum_bytes = table.get("maximum_response_bytes")
     if (
         not isinstance(maximum_bytes, int)
@@ -197,6 +241,8 @@ def _load_gp(document: dict[str, Any]) -> GpConfig:
         base_url=base_url,
         user_agent=_non_empty_string(table, "user_agent", "gp"),
         minimum_interval_seconds=interval,
+        network_retry_interval_seconds=retry_interval,
+        maximum_daily_bytes=maximum_daily_bytes,
         connect_timeout_seconds=_positive_number(table, "connect_timeout_seconds", "gp"),
         read_timeout_seconds=_positive_number(table, "read_timeout_seconds", "gp"),
         maximum_response_bytes=maximum_bytes,
@@ -264,14 +310,20 @@ def _load_catalog(document: dict[str, Any]) -> CatalogConfig:
     )
 
 
-# The GP timer fires every 2h10m and the catalogue runs daily with up to 30
+# The GP timer fires every 6h and the catalogue runs daily with up to 30
 # minutes of jitter, so these defaults leave room for several missed runs before
 # anyone is paged. They are deliberately defaults rather than required keys:
 # a monitoring job that refuses to start because a deployed TOML predates it is
 # a monitoring job that goes quiet exactly when it is needed.
+#
+# The GP thresholds are looser than the timer alone implies. `last_success` only
+# moves when CelesTrak actually has new data, and the underlying 18 SDS feed
+# updates 2-3 times a day; under one-download-per-update the runs in between
+# answer HTTP 403 "not updated" and leave `last_success` where it was. A
+# perfectly healthy dataset can therefore sit at 12 hours old.
 _HEALTH_DEFAULTS = {
-    "gp_warning_age_seconds": 6 * 3600,
-    "gp_critical_age_seconds": 12 * 3600,
+    "gp_warning_age_seconds": 18 * 3600,
+    "gp_critical_age_seconds": 36 * 3600,
     "catalog_warning_age_seconds": 36 * 3600,
     "catalog_critical_age_seconds": 72 * 3600,
     "free_bytes_warning": 2 * 1024**3,

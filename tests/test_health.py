@@ -34,6 +34,15 @@ def _healthy(config: AppConfig, *, gp_age: timedelta = timedelta(hours=1)) -> No
             "result": "unchanged",
         },
     )
+    _write(
+        public / "status" / "gp.json",
+        {
+            "checked_at": (NOW - timedelta(hours=2)).isoformat(),
+            "published": 13,
+            "daily_bytes": 33 * 1024**2,
+            "blocked": False,
+        },
+    )
     for dataset in config.gp.datasets:
         _write(
             public / "status" / "gp" / f"{dataset.name}.json",
@@ -60,10 +69,10 @@ def test_fully_populated_tree_is_healthy(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "age, severity",
     [
-        (timedelta(hours=5, minutes=59), OK),
-        (timedelta(hours=6), WARNING),
-        (timedelta(hours=11, minutes=59), WARNING),
-        (timedelta(hours=12), CRITICAL),
+        (timedelta(hours=17, minutes=59), OK),
+        (timedelta(hours=18), WARNING),
+        (timedelta(hours=35, minutes=59), WARNING),
+        (timedelta(hours=36), CRITICAL),
     ],
 )
 def test_gp_staleness_crosses_thresholds_at_the_configured_ages(
@@ -77,10 +86,10 @@ def test_gp_staleness_crosses_thresholds_at_the_configured_ages(
 
 def test_stale_gp_dataset_reports_the_recorded_upstream_error(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    _healthy(config, gp_age=timedelta(hours=13))
+    _healthy(config, gp_age=timedelta(hours=37))
     _write(
         config.storage.root / "public" / "v1" / "status" / "gp" / "active.json",
-        {"last_success": (NOW - timedelta(hours=13)).isoformat(), "error": "HTTP 503"},
+        {"last_success": (NOW - timedelta(hours=37)).isoformat(), "error": "HTTP 503"},
     )
 
     check = _by_name(config, "gp:active")
@@ -113,6 +122,66 @@ def test_unusable_gp_timestamp_is_critical(tmp_path: Path, last_success: object)
     )
 
     assert _by_name(config, "gp:active").severity == CRITICAL
+
+
+def test_blocked_gp_run_is_critical_before_anything_goes_stale(tmp_path: Path) -> None:
+    """A refused run leaves every file fresh; only the run summary knows.
+
+    Waiting for the per-dataset ages to cross their thresholds means noticing a
+    firewall block many hours late — long past the two-hour window in which
+    simply stopping clears a temporary one.
+    """
+
+    config = make_config(tmp_path)
+    _healthy(config)
+    _write(
+        config.storage.root / "public" / "v1" / "status" / "gp.json",
+        {
+            "checked_at": NOW.isoformat(),
+            "published": 0,
+            "daily_bytes": 0,
+            "blocked": True,
+            "stop_reason": "unreachable",
+        },
+    )
+
+    check = _by_name(config, "gp-run")
+
+    assert check.severity == CRITICAL
+    assert "unreachable" in check.detail
+    assert not evaluate(config, now=NOW).successful
+
+
+def test_missing_gp_run_summary_is_critical(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    _healthy(config)
+    (config.storage.root / "public" / "v1" / "status" / "gp.json").unlink()
+
+    assert _by_name(config, "gp-run").severity == CRITICAL
+
+
+def test_gp_run_summary_without_checked_at_does_not_page(tmp_path: Path) -> None:
+    """A summary from a release predating `checked_at` still has age checks."""
+
+    config = make_config(tmp_path)
+    _healthy(config)
+    _write(
+        config.storage.root / "public" / "v1" / "status" / "gp.json",
+        {"attempted": 13, "published": 13},
+    )
+
+    assert _by_name(config, "gp-run").severity == OK
+
+
+def test_stalled_gp_timer_is_reported_by_run_age(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    _healthy(config)
+    _write(
+        config.storage.root / "public" / "v1" / "status" / "gp.json",
+        {"checked_at": (NOW - timedelta(hours=37)).isoformat(), "blocked": False},
+    )
+
+    assert _by_name(config, "gp-run").severity == CRITICAL
 
 
 def test_unchanged_catalog_run_is_healthy(tmp_path: Path) -> None:
@@ -265,7 +334,7 @@ def test_unstattable_storage_root_is_critical(
 
 def test_report_severity_is_the_worst_check(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    _healthy(config, gp_age=timedelta(hours=7))
+    _healthy(config, gp_age=timedelta(hours=19))
     _write(
         config.storage.root / "public" / "v1" / "data" / "manifest.json",
         {"counts": {"records": 0}},
@@ -287,6 +356,10 @@ def test_evaluate_defaults_to_the_current_clock(tmp_path: Path) -> None:
     _write(
         config.storage.root / "public" / "v1" / "status" / "catalog.json",
         {"checkedAt": datetime.now(tz=UTC).isoformat(), "successful": True},
+    )
+    _write(
+        config.storage.root / "public" / "v1" / "status" / "gp.json",
+        {"checked_at": datetime.now(tz=UTC).isoformat(), "published": 13, "blocked": False},
     )
 
     assert evaluate(config).severity == OK

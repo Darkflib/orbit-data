@@ -43,8 +43,8 @@ def test_gp_timer_cannot_undercut_persisted_request_floor() -> None:
     timer = _unit("orbit-data-gp.timer", directory=SYSTEMD_UNITS)["Timer"]
 
     assert "OnBootSec" not in timer
-    assert timer["OnUnitInactiveSec"] == "2h10m"
-    assert timer["RandomizedDelaySec"] == "5m"
+    assert timer["OnUnitInactiveSec"] == "6h"
+    assert timer["RandomizedDelaySec"] == "15m"
     assert timer["AccuracySec"] == "1m"
     assert timer["Unit"] == "orbit-data-gp.service"
 

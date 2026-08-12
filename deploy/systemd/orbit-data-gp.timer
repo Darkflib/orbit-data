@@ -2,8 +2,13 @@
 Description=Schedule Orbit CelesTrak OMM refreshes
 
 [Timer]
-OnUnitInactiveSec=2h10m
-RandomizedDelaySec=5m
+# CelesTrak's per-query floor is 2 hours, but polling at the floor was buying
+# nothing: the underlying 18 SDS GP data only updates 2-3 times a day, so the
+# extra runs downloaded identical bytes and pushed this host over CelesTrak's
+# 100 MB/day firewall threshold. Six hours stays ahead of the real update rate
+# while cutting the daily pull by roughly two thirds.
+OnUnitInactiveSec=6h
+RandomizedDelaySec=15m
 AccuracySec=1m
 Unit=orbit-data-gp.service
 

@@ -80,9 +80,20 @@ for the initial deployment. The timers are native persistent systemd units and
 are enabled normally.
 
 The explicit first-start commands own the initial refresh. The GP timer then
-waits at least 2 hours 10 minutes after each completed run, safely above the
-service's persisted 2-hour-5-minute request floor. The catalogue runs daily at
-06:17 UTC with up to 30 minutes of jitter and catches up after downtime.
+waits 6 hours after each completed run, with up to 15 minutes of jitter. That is
+far above the service's persisted 2-hour-5-minute request floor, deliberately:
+the underlying 18 SDS GP data only updates 2-3 times a day, so polling at the
+floor re-downloaded identical bytes and pushed this host past CelesTrak's
+100 MB/day firewall threshold. The floor stays where it is so an out-of-band
+`systemctl start orbit-data-gp.service` cannot undercut it. The catalogue runs
+daily at 06:17 UTC with up to 30 minutes of jitter and catches up after downtime.
+
+If CelesTrak stops answering, `journalctl -u orbit-data-gp.service` now carries
+their refusal text verbatim, and `/v1/status/gp.json` reports `blocked` plus
+`daily_bytes` for the trailing 24 hours. A temporary block clears itself within
+two hours of the queries stopping (`systemctl stop orbit-data-gp.timer`); a
+firewall entry earned by sustained abuse needs a mail to `TS.Kelso@celestrak.org`
+quoting the IP address. See <https://celestrak.org/usage-policy.php>.
 When the volume provides cross-host advisory locking, the application lock files
 prevent two hosts from writing the same stream concurrently during failover.
 
@@ -105,11 +116,21 @@ still resolves through the release symlink and reports records, how long ago the
 catalogue job last *ran* (`checkedAt`, not `generatedAt` — an unchanged
 catalogue is healthy), and the age of every configured GP dataset's
 `last_success`. A stale dataset's last recorded upstream error is included in
-the message, so a page says `13.0h old; last error: CelesTrak returned HTTP 503`
-rather than just reporting an age.
+the message, so a page says `37.0h old; last error: HTTP 503` rather than just
+reporting an age.
+
+The `gp-run` check reads `/v1/status/gp.json` and is the one that fires *fast*.
+Dataset ages cannot report a block: a refused run leaves every last-known-good
+file exactly where it was, so staleness only crosses a threshold many hours
+later — long after the two-hour window in which simply stopping clears a
+temporary CelesTrak block. `gp-run` goes critical on the first run that comes
+back `blocked`, and also catches a timer that has stopped firing at all, which
+per-dataset ages report only indirectly.
 
 Warnings are logged and exit zero. Only a critical fails the unit, so alerting
-is an `OnFailure=` drop-in on `orbit-data-check.service`:
+is an `OnFailure=` drop-in on `orbit-data-check.service`. **Nothing is wired up
+by default** — until you add one, every check above lands in the journal and
+nowhere else:
 
 ```bash
 systemctl edit orbit-data-check.service   # [Unit] OnFailure=your-notifier.service
@@ -118,7 +139,10 @@ systemctl start orbit-data-check.service  # run one pass now
 ```
 
 Thresholds live in the optional `[health]` table of `/etc/orbit-data.toml`
-(6h/12h for GP, 36h/72h for the catalogue, 2 GiB/512 MiB free). Every key
+(18h/36h for GP, 36h/72h for the catalogue, 2 GiB/512 MiB free). The GP
+thresholds are looser than the 6-hour timer implies on purpose: `last_success`
+only advances when CelesTrak actually has new data, so a healthy dataset can sit
+at 12 hours old. `gp-run` is the check that notices a fast failure. Every key
 defaults, so a config file predating this job still monitors correctly rather
 than refusing to start — a monitor that fails closed on its own configuration
 goes quiet exactly when it is needed.

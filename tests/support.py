@@ -10,11 +10,15 @@ import orjson
 from orbit_data.config import AppConfig, load_config
 
 
+# Every argument is one independently overridable knob of the fixture config.
+# pylint: disable-next=too-many-arguments
 def config_text(
     root: Path,
     *,
     datasets: str | None = None,
     interval: int = 7200,
+    network_retry_interval_seconds: int = 900,
+    maximum_daily_bytes: int = 80 * 1024**2,
     maximum_response_bytes: int = 1_048_576,
 ) -> str:
     """Build a complete minimal application configuration."""
@@ -42,6 +46,8 @@ releases_to_keep = 3
 base_url = "https://celestrak.org/NORAD/elements/gp.php"
 user_agent = "orbit-data-test/1"
 minimum_interval_seconds = {interval}
+network_retry_interval_seconds = {network_retry_interval_seconds}
+maximum_daily_bytes = {maximum_daily_bytes}
 connect_timeout_seconds = 1
 read_timeout_seconds = 2
 maximum_response_bytes = {maximum_response_bytes}
