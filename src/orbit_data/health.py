@@ -134,6 +134,51 @@ def _check_gp(config: AppConfig, now: datetime) -> list[Check]:
     return checks
 
 
+def _check_gp_run(config: AppConfig, now: datetime) -> Check:
+    """The GP job itself, as opposed to the freshness of what it published.
+
+    Per-dataset ages answer "is the data stale". They cannot answer "is
+    CelesTrak refusing us", because a refused run leaves every last-known-good
+    file exactly where it was and only ages into a warning many hours later.
+    `blocked` says so on the first run that hits it — which, for a firewall
+    block that clears itself in two hours if you stop asking, is the difference
+    between a fix and a manual unblock request.
+    """
+
+    document = _read_json(config.storage.root / "public" / "v1" / "status" / "gp.json")
+    if document is None:
+        return Check("gp-run", CRITICAL, "run summary missing or unreadable")
+    used_mib = _as_int(document.get("daily_bytes")) / 1024**2
+    detail = f"{_as_int(document.get('published'))} published, {used_mib:.1f} MiB/24h"
+    if document.get("blocked"):
+        reason = document.get("stop_reason") or "refused"
+        return Check("gp-run", CRITICAL, f"CelesTrak is refusing requests ({reason}); {detail}")
+    if document.get("budget_exhausted"):
+        # A warning, not a critical: last-known-good data is still being served
+        # and the allowance refills as the 24-hour window rolls. But it must not
+        # read as healthy — datasets are being skipped, and the only other
+        # symptom is staleness that appears many hours later.
+        return Check("gp-run", WARNING, f"daily byte budget spent; {detail}")
+    age = _age_seconds(document.get("checked_at"), now)
+    if age is None:
+        # A summary written by a release predating `checked_at`. The per-dataset
+        # age checks still cover staleness, so this is not worth paging on.
+        return Check("gp-run", OK, detail)
+    return Check(
+        "gp-run",
+        _age_severity(
+            age,
+            warning=config.health.gp_warning_age_seconds,
+            critical=config.health.gp_critical_age_seconds,
+        ),
+        f"last run {_describe_age(age)}; {detail}",
+    )
+
+
+def _as_int(raw: object) -> int:
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+
+
 def _check_catalog(config: AppConfig, now: datetime) -> Check:
     """Catalogue freshness, measured by when the job last *ran*.
 
@@ -208,6 +253,7 @@ def evaluate(config: AppConfig, *, now: datetime | None = None) -> HealthReport:
         _check_storage(config),
         _check_public_tree(config),
         _check_catalog(config, moment),
+        _check_gp_run(config, moment),
     ]
     checks.extend(_check_gp(config, moment))
     return HealthReport(checks=tuple(checks))

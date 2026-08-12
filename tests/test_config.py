@@ -122,9 +122,12 @@ def test_production_config_covers_orbit_datasets() -> None:
         "oneweb",
         "qianfan",
         "special-decaying",
-        "starlink",
         "stations",
     }
+    # `starlink` is a strict subset of `active` and CelesTrak names the pair as
+    # redundant. Fetching both was most of the bandwidth that got this service
+    # firewalled; keep the regression pinned rather than only commented.
+    assert "starlink" not in {dataset.name for dataset in config.gp.datasets}
 
 
 def test_health_thresholds_default_when_the_table_is_absent(tmp_path: Path) -> None:
@@ -135,8 +138,8 @@ def test_health_thresholds_default_when_the_table_is_absent(tmp_path: Path) -> N
 
     health = load_config(path).health
 
-    assert health.gp_warning_age_seconds == 21600
-    assert health.gp_critical_age_seconds == 43200
+    assert health.gp_warning_age_seconds == 18 * 3600
+    assert health.gp_critical_age_seconds == 36 * 3600
     assert health.catalog_warning_age_seconds == 129600
     assert health.catalog_critical_age_seconds == 259200
     assert health.free_bytes_warning == 2 * 1024**3
