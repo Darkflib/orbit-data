@@ -530,6 +530,9 @@ class GpUpdater:
         )
         return "forbidden"
 
+    # The three keyword arguments are the run's byte accounting, which has to
+    # reach the one place that actually consumes the stream.
+    # pylint: disable-next=too-many-arguments
     def _download(
         self,
         client: httpx.Client,
