@@ -8,7 +8,19 @@ releases_to_keep = 3
 [gp]
 base_url = "https://celestrak.org/NORAD/elements/gp.php"
 user_agent = "orbit-data/0.1 (+https://github.com/Darkflib/orbit-data)"
+# CelesTrak's floor is 2 hours per query, but the timer now fires every 6 hours
+# because the underlying 18 SDS feed only updates 2-3 times a day. 7500s keeps a
+# five-minute cushion above that 2h floor, so an out-of-band `sync-gp` cannot
+# undercut it even with clock skew across a volume failover.
 minimum_interval_seconds = 7500
+# A connect timeout means CelesTrak never received the request, so it costs them
+# nothing and does not spend the floor above. Retry in minutes instead of
+# surrendering a whole cycle to a dropped packet.
+network_retry_interval_seconds = 900
+# CelesTrak firewalls IP addresses pulling more than 100 MB/day, and gp.php
+# serves no compression. This is a backstop against a misedited dataset list;
+# the primary control is the timer cadence.
+maximum_daily_bytes = 83886080
 connect_timeout_seconds = 10
 read_timeout_seconds = 90
 maximum_response_bytes = 67108864
@@ -62,12 +74,15 @@ value = "oneweb"
 minimum_records = 1
 maximum_count_drop_fraction = 0.35
 
-[[gp.datasets]]
-name = "starlink"
-query = "GROUP"
-value = "starlink"
-minimum_records = 5000
-maximum_count_drop_fraction = 0.25
+# The `starlink` GROUP is deliberately absent. It is ~10,900 objects and a
+# strict subset of `active`, which we already fetch; CelesTrak's documentation
+# names the pair explicitly ("There is no need to download the list of active
+# satellites and the list of all Starlink satellites, since the latter is a
+# subset of the former") and names Active and Starlink as the first two GROUPs
+# under one-download-per-update enforcement. Together they were ~11.6 MB of a
+# ~12.4 MB run, and at the old 2h10m cadence that put this service around
+# 133 MB/day against a documented 100 MB/day firewall threshold. Derive Starlink
+# from `active` downstream rather than restoring this entry.
 
 [[gp.datasets]]
 name = "kuiper"
@@ -124,9 +139,11 @@ minimum_constellation_records = 80
 # Warnings are logged and exit 0; a critical fails the unit so systemd's
 # OnFailure= can page.
 [health]
-# The GP timer fires every 2h10m, so 6h is roughly three missed runs.
-gp_warning_age_seconds = 21600
-gp_critical_age_seconds = 43200
+# The GP timer fires every 6h, but `last_success` only advances when CelesTrak
+# actually has new data — the 18 SDS feed updates 2-3 times a day, and the runs
+# in between answer HTTP 403 "not updated". A healthy dataset can sit at 12h.
+gp_warning_age_seconds = 64800
+gp_critical_age_seconds = 129600
 # The catalogue is daily with up to 30 minutes of jitter.
 catalog_warning_age_seconds = 129600
 catalog_critical_age_seconds = 259200
