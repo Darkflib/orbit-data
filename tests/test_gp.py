@@ -652,3 +652,263 @@ def test_run_summary_reports_bandwidth_and_block_state(tmp_path: Path) -> None:
     assert summary["checked_at"] == NOW.isoformat()
     assert summary["daily_bytes"] == len(payload)
     assert summary["blocked"] is False
+
+
+def test_known_size_is_declined_before_the_connection_is_opened(tmp_path: Path) -> None:
+    """The budget check must be a pre-flight decision, not a mid-stream abort.
+
+    Cutting a dataset off at the ceiling throws away every byte it already
+    pulled — from a service that is rationing us. Once a dataset's own last
+    response size is known, a request that cannot finish is never made.
+    """
+
+    payload = omm_payload(4)
+    config = make_config(
+        tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(payload) * 3 + 16
+    )
+    seen: list[str] = []
+    current = NOW
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params["GROUP"])
+        return httpx.Response(200, content=payload)
+
+    updater = GpUpdater(config, transport=_transport(handler), clock=lambda: current)
+    assert updater.run().published == 3
+    current += timedelta(hours=3)
+
+    second = updater.run()
+
+    assert second.published == 0
+    assert second.skipped == 3
+    assert second.budget_exhausted
+    # Sixteen bytes of allowance were left and not one of them was spent.
+    assert seen == ["first", "second", "third"]
+    assert second.downloaded_bytes == 0
+    state = orjson.loads((config.storage.root / "state/gp/first.json").read_bytes())
+    assert state["last_result"] == "budget-skipped"
+    assert state["last_response_bytes"] == len(payload)
+    # Nothing reached the network, so nothing may claim an attempt: on state
+    # predating `retry_after` that claim would defer a real request by a full
+    # two-hour cycle to pay for one that never happened.
+    assert state["last_attempt"] == NOW.isoformat()
+
+
+def test_dataset_with_no_recorded_size_is_still_attempted(tmp_path: Path) -> None:
+    """Unknown means unknown, not forbidden.
+
+    Refusing a dataset that has never been measured would deadlock a fresh
+    deployment: nothing records a size without a fetch, so nothing would ever be
+    fetched. The mid-stream ceiling still bounds the damage to the allowance
+    that was left.
+    """
+
+    payload = omm_payload(20)
+    config = make_config(tmp_path, maximum_daily_bytes=len(payload) // 2)
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=payload)
+
+    result = GpUpdater(config, transport=_transport(handler), clock=lambda: NOW).run()
+
+    assert calls == 1
+    assert result.failed == 1
+    assert result.budget_exhausted
+    state = orjson.loads((config.storage.root / "state/gp/active.json").read_bytes())
+    assert state["last_result"] == "budget-exceeded"
+    # A truncated stream is not a measurement. Recording it would teach the
+    # pre-flight check that this dataset is half its real size.
+    assert state["last_response_bytes"] is None
+
+
+def test_declined_dataset_holds_the_queue_head_without_starving_the_rest(
+    tmp_path: Path,
+) -> None:
+    """The ordering half of the pre-flight skip.
+
+    A declined dataset deliberately does not advance `last_attempt`, so it stays
+    at the front of the least-recently-attempted queue indefinitely. That must
+    not reproduce the starvation bug: skipping is a `continue`, not a stop, so
+    the datasets behind it are fetched on every run — and holding the head is
+    what gives the dataset that has waited longest first claim on the allowance
+    once the 24-hour window rolls, instead of the small ones nibbling away
+    every refill.
+    """
+
+    big, small = omm_payload(60), omm_payload(1)
+    config = make_config(
+        tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(big) + 30 * len(small)
+    )
+    current = NOW
+    runs: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        group = request.url.params["GROUP"]
+        runs[-1].append(group)
+        return httpx.Response(200, content=big if group == "first" else small)
+
+    updater = GpUpdater(config, transport=_transport(handler), clock=lambda: current)
+    for _ in range(3):
+        runs.append([])
+        updater.run()
+        current += timedelta(hours=3)
+
+    assert runs[0] == ["first", "second", "third"]
+    # `first` no longer fits, and the two behind it keep flowing anyway.
+    assert runs[1] == ["second", "third"]
+    assert runs[2] == ["second", "third"]
+
+    # Once the trailing window rolls off, the dataset pinned at the head is the
+    # one that gets the refilled allowance first.
+    current = NOW + timedelta(hours=31)
+    runs.append([])
+    updater.run()
+
+    assert runs[3][0] == "first"
+    assert (config.storage.root / "public/v1/gp/first.json").read_bytes() == big
+
+
+def test_per_dataset_cap_fails_only_that_dataset(tmp_path: Path) -> None:
+    """One oversized GROUP must not spend the allowance the others need.
+
+    The cap is our own policy about one query, so breaching it is neither a
+    reason to stop the run nor a statement about the shared budget.
+    """
+
+    datasets = """
+[[gp.datasets]]
+name = "first"
+query = "GROUP"
+value = "first"
+minimum_records = 1
+maximum_count_drop_fraction = 1
+maximum_bytes = 1024
+
+[[gp.datasets]]
+name = "second"
+query = "GROUP"
+value = "second"
+minimum_records = 1
+maximum_count_drop_fraction = 1
+"""
+    config = make_config(tmp_path, datasets=datasets)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        count = 40 if request.url.params["GROUP"] == "first" else 1
+        return httpx.Response(200, content=omm_payload(count))
+
+    result = GpUpdater(config, transport=_transport(handler), clock=lambda: NOW).run()
+
+    assert not result.stopped
+    assert result.failed == 1
+    assert result.published == 1
+    # The shared allowance is untouched by one dataset outgrowing its own ration.
+    assert not result.budget_exhausted
+    assert not (config.storage.root / "public/v1/gp/first.json").exists()
+    assert (config.storage.root / "public/v1/gp/second.json").exists()
+    state = orjson.loads((config.storage.root / "state/gp/first.json").read_bytes())
+    assert state["last_result"] == "over-dataset-cap"
+
+
+def test_lowered_cap_declines_a_known_oversized_dataset_in_advance(tmp_path: Path) -> None:
+    """A cap below a measured size means the request is never made again."""
+
+    dataset = """
+[[gp.datasets]]
+name = "active"
+query = "GROUP"
+value = "active"
+minimum_records = 1
+maximum_count_drop_fraction = 1
+{cap}
+"""
+    payload = omm_payload(10)
+    config = make_config(tmp_path, datasets=dataset.format(cap=""))
+    calls = 0
+    current = NOW
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=payload)
+
+    GpUpdater(config, transport=_transport(handler), clock=lambda: current).run()
+    assert calls == 1
+
+    # As if an operator had tightened the ration after seeing the size.
+    capped = make_config(tmp_path, datasets=dataset.format(cap="maximum_bytes = 1024"))
+    current += timedelta(hours=3)
+
+    result = GpUpdater(capped, transport=_transport(handler), clock=lambda: current).run()
+
+    assert calls == 1
+    assert result.skipped == 1
+    # Not a budget condition: the daily window rolls, a per-dataset cap does not.
+    assert not result.budget_exhausted
+    status = orjson.loads((config.storage.root / "public/v1/status/gp/active.json").read_bytes())
+    assert status["last_result"] == "over-dataset-cap"
+    assert status["maximum_bytes"] == 1024
+
+
+def test_status_tree_publishes_the_allowance_and_per_dataset_sizes(tmp_path: Path) -> None:
+    """ "Which GROUP is eating the allowance" must be answerable from the tree."""
+
+    payload = omm_payload(3)
+    budget = 4 * len(payload)
+    config = make_config(tmp_path, maximum_daily_bytes=budget)
+
+    GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(200, content=payload)),
+        clock=lambda: NOW,
+    ).run()
+
+    summary = orjson.loads((config.storage.root / "public/v1/status/gp.json").read_bytes())
+    assert summary["schemaVersion"] == 1
+    assert summary["daily_bytes"] == len(payload)
+    assert summary["budget_bytes"] == budget
+    assert summary["budget_remaining_bytes"] == budget - len(payload)
+    status = orjson.loads((config.storage.root / "public/v1/status/gp/active.json").read_bytes())
+    assert status["schemaVersion"] == 1
+    assert status["last_response_bytes"] == len(payload)
+    assert status["maximum_bytes"] is None
+
+
+def test_state_written_before_this_release_still_loads(tmp_path: Path) -> None:
+    """`DatasetState.load` does `cls(**document)`, so absent fields must default."""
+
+    config = make_config(tmp_path)
+    state_path = config.storage.root / "state/gp/active.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_bytes(
+        orjson.dumps(
+            {
+                "last_attempt": NOW.isoformat(),
+                "last_success": NOW.isoformat(),
+                "last_http_status": 200,
+                "last_result": "published",
+                "error": None,
+                "record_count": 1,
+                "sha256": "0" * 64,
+                "earliest_epoch": None,
+                "latest_epoch": None,
+                "retry_after": (NOW + timedelta(hours=2)).isoformat(),
+            }
+        )
+    )
+    payload = omm_payload(2)
+
+    result = GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(200, content=payload)),
+        clock=lambda: NOW + timedelta(hours=3),
+    ).run()
+
+    # An unmeasured dataset is attempted, and the run records the size for next
+    # time rather than refusing to start.
+    assert result.published == 1
+    state = orjson.loads(state_path.read_bytes())
+    assert state["last_response_bytes"] == len(payload)

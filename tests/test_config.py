@@ -89,6 +89,55 @@ def test_invalid_gp_config(tmp_path: Path, replacement: str, message: str) -> No
         load_config(path)
 
 
+def test_dataset_byte_cap_is_optional_and_read_when_present(tmp_path: Path) -> None:
+    """A TOML predating `maximum_bytes` must load exactly as it did before.
+
+    Same rule as `gp.maximum_daily_bytes` and the `[health]` thresholds: a
+    safety bound that refuses to load against a deployed configuration takes the
+    updater offline precisely when the bound was meant to protect it.
+    """
+
+    dataset = """
+[[gp.datasets]]
+name = "active"
+query = "GROUP"
+value = "active"
+minimum_records = 1
+maximum_count_drop_fraction = 0.25
+{cap}
+"""
+    path = tmp_path / "config.toml"
+
+    path.write_text(
+        config_text(Path("/srv/data"), datasets=dataset.format(cap="")), encoding="utf-8"
+    )
+    assert load_config(path).gp.datasets[0].maximum_bytes is None
+
+    path.write_text(
+        config_text(Path("/srv/data"), datasets=dataset.format(cap="maximum_bytes = 4096")),
+        encoding="utf-8",
+    )
+    assert load_config(path).gp.datasets[0].maximum_bytes == 4096
+
+
+@pytest.mark.parametrize("value", ["100", "true", '"4096"', "4096.5"])
+def test_invalid_dataset_byte_cap_is_rejected(tmp_path: Path, value: str) -> None:
+    dataset = f"""
+[[gp.datasets]]
+name = "active"
+query = "GROUP"
+value = "active"
+minimum_records = 1
+maximum_count_drop_fraction = 0.25
+maximum_bytes = {value}
+"""
+    path = tmp_path / "config.toml"
+    path.write_text(config_text(Path("/srv/data"), datasets=dataset), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="maximum_bytes must be an integer of at least 1024"):
+        load_config(path)
+
+
 def test_duplicate_gp_dataset_names(tmp_path: Path) -> None:
     dataset = """
 [[gp.datasets]]
@@ -128,6 +177,12 @@ def test_production_config_covers_orbit_datasets() -> None:
     # redundant. Fetching both was most of the bandwidth that got this service
     # firewalled; keep the regression pinned rather than only commented.
     assert "starlink" not in {dataset.name for dataset in config.gp.datasets}
+    # `active` is now the largest query by a wide margin — about 7 MB of a
+    # ~7.9 MB run — so it is the one that has to be rationed rather than allowed
+    # to spend the shared allowance on its own.
+    active = next(dataset for dataset in config.gp.datasets if dataset.name == "active")
+    assert active.maximum_bytes == 10 * 1024**2
+    assert active.maximum_bytes < config.gp.maximum_daily_bytes
 
 
 def test_health_thresholds_default_when_the_table_is_absent(tmp_path: Path) -> None:

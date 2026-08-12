@@ -42,6 +42,15 @@ _ERROR_DETAIL_CHARS = 500
 # dataset, but never on the first — that is what turned a blip into a wedge.
 _NETWORK_FAILURE_STOP_THRESHOLD = 2
 
+# A dataset's last response size is the only forecast available — gp.php sends
+# no Content-Length ahead of the body and answers no HEAD — but catalogues grow
+# between runs, so an estimate equal to the last size is systematically low. A
+# dataset whose previous size only just fits would be admitted, cut off at the
+# ceiling, and waste every byte it pulled: precisely the outcome the pre-flight
+# check exists to avoid. Pad it rather than rediscover the growth at CelesTrak's
+# expense; 5% is far more than a few hours of catalogue churn.
+_SIZE_ESTIMATE_MARGIN_PERCENT = 5
+
 
 class GpUpdateError(RuntimeError):
     """A GP update failed and the last-known-good file was retained."""
@@ -58,6 +67,15 @@ class BudgetExceededError(GpUpdateError):
     upstream fault. The dataset fails, the run continues, and every remaining
     dataset is skipped by the same budget check that would have caught this one
     had its size been knowable in advance.
+    """
+
+
+class DatasetCapExceededError(GpUpdateError):
+    """One dataset outgrew its own `maximum_bytes` ceiling mid-stream.
+
+    Neither a stop nor a budget condition. `maximum_bytes` is our own policy
+    about one GROUP, so it fails that GROUP and leaves the run — and the rest of
+    the shared allowance, which is the whole point of having the cap — alone.
     """
 
 
@@ -92,6 +110,12 @@ class DatasetState:
     # every request so that the floor survives a crash, and shortened only when
     # we know CelesTrak never received the request.
     retry_after: str | None = None
+    # Size of the last complete 200 response, on the persistent volume for the
+    # same reason `retry_after` is: it is what lets the *next* run decline a
+    # request it already knows cannot finish inside the allowance. `None` means
+    # never observed, which includes every dataset whose state was written by a
+    # release predating this field — `load` fills it from the default.
+    last_response_bytes: int | None = None
 
     @classmethod
     def load(cls, path: Path) -> DatasetState:
@@ -130,6 +154,16 @@ class GpRunResult:
     stopped: bool
     downloaded_bytes: int = 0
     daily_bytes: int = 0
+    # The allowance and what is left of it, published rather than left to be
+    # derived. `daily_bytes` alone answers "how much have we spent" but not "of
+    # what", which is the question anyone comparing this service against
+    # CelesTrak's 100 MB/day threshold is actually asking. The headroom is not
+    # quite `budget_bytes - daily_bytes` either: a stream is cut *after* the
+    # chunk that crosses the ceiling, so the window can end fractionally over
+    # and the difference can go negative. It is clamped at zero here once,
+    # rather than in every consumer.
+    budget_bytes: int = 0
+    budget_remaining_bytes: int = 0
     blocked: bool = False
     # Distinct from `skipped`, which also counts datasets that were simply not
     # due. Without this a spent allowance is indistinguishable from a quiet,
@@ -145,6 +179,21 @@ class GpRunResult:
 
 
 # pylint: enable=too-many-instance-attributes
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamLimit:
+    """The lowest ceiling one response must stay under, and whose it is.
+
+    Three independent limits bound the same stream — the shared daily
+    allowance, the global response limit, and the dataset's own optional cap —
+    and hitting each one means something different. Reducing them to a bare
+    minimum() loses the only thing that decides whether the run stops, the
+    dataset fails, or the backstop simply worked.
+    """
+
+    limit: int
+    source: str
 
 
 class BandwidthLedger:
@@ -347,7 +396,19 @@ class GpUpdater:
                             extra={"dataset": dataset.name, "error": str(exc)},
                         )
                         continue
-                    if outcome == "skipped":
+                    if outcome == "budget-skipped":
+                        # Declined before the connection was opened, so nothing
+                        # was spent and nothing was wasted — but datasets are
+                        # being dropped, and that has to reach `check-health`
+                        # exactly as a mid-stream abort would.
+                        skipped += 1
+                        budget_exhausted = True
+                        continue
+                    if outcome in {"skipped", "over-cap"}:
+                        # An over-cap dataset is deliberately not
+                        # `budget_exhausted`: the shared allowance is fine, one
+                        # dataset's own ceiling is not, and conflating them
+                        # points whoever is paged at the wrong knob.
                         skipped += 1
                         continue
                     attempted += 1
@@ -371,6 +432,8 @@ class GpUpdater:
                 stopped=stopped,
                 downloaded_bytes=self._downloaded,
                 daily_bytes=ledger.used(),
+                budget_bytes=budget,
+                budget_remaining_bytes=max(budget - ledger.used(), 0),
                 blocked=blocked,
                 budget_exhausted=budget_exhausted,
                 stop_reason=stop_reason,
@@ -394,6 +457,10 @@ class GpUpdater:
         and the queue behind it drains first. Never-attempted datasets sort
         ahead of everything, and ties break on configuration order, so a fresh
         deployment still runs the list exactly top to bottom.
+
+        A dataset skipped by `_preflight` deliberately leaves `last_attempt`
+        alone and therefore stays at the head of this queue — see that method
+        for why that is the safe direction rather than the starving one.
         """
 
         def key(item: tuple[int, GpDatasetConfig]) -> tuple[datetime, int]:
@@ -428,6 +495,14 @@ class GpUpdater:
             )
             return "skipped"
 
+        # Ordered after the due check on purpose: a dataset that is not due yet
+        # has no pending request to decline, and recording a budget refusal
+        # against it would overwrite a perfectly good `last_result` with a
+        # verdict about a request nobody was going to make.
+        declined = self._preflight(dataset, state, budget_remaining)
+        if declined is not None:
+            return declined
+
         attempted_at = now.astimezone(UTC).isoformat()
         state.last_attempt = attempted_at
         state.last_result = "attempting"
@@ -440,10 +515,17 @@ class GpUpdater:
         url = self._url(dataset)
         try:
             status, payload = self._download(
-                client, url, ledger=ledger, now=now, budget_remaining=budget_remaining
+                client,
+                url,
+                ledger=ledger,
+                now=now,
+                bound=self._stream_limit(dataset, budget_remaining),
             )
         except BudgetExceededError as exc:
             self._record_failure(dataset, state, "budget-exceeded", str(exc))
+            raise
+        except DatasetCapExceededError as exc:
+            self._record_failure(dataset, state, "over-dataset-cap", str(exc))
             raise
         except StopGpRunError as exc:
             self._record_failure(dataset, state, "response-too-large", str(exc))
@@ -468,6 +550,26 @@ class GpUpdater:
             raise NetworkGpError(f"network failure after request: {exc}") from exc
 
         state.last_http_status = status
+        if status == 200:
+            # Only a complete 200 body is a usable forecast. A "not updated" 403
+            # is a couple of hundred bytes and an aborted stream stopped at
+            # whichever ceiling it hit, so recording either would teach the
+            # pre-flight check that the largest GROUP is tiny — and hand back
+            # exactly the mid-stream cut-off it exists to prevent. Recorded
+            # before validation because an unparseable body still crossed the
+            # wire at full size.
+            state.last_response_bytes = len(payload)
+        return self._handle_response(dataset, state, status, payload)
+
+    def _handle_response(
+        self,
+        dataset: GpDatasetConfig,
+        state: DatasetState,
+        status: int,
+        payload: bytes,
+    ) -> str:
+        """Classify a response CelesTrak actually served, and publish if valid."""
+
         if status == 403:
             return self._handle_forbidden(dataset, state, payload)
         if status >= 500:
@@ -497,6 +599,100 @@ class GpUpdater:
             },
         )
         return "published"
+
+    def _preflight(
+        self,
+        dataset: GpDatasetConfig,
+        state: DatasetState,
+        budget_remaining: int,
+    ) -> str | None:
+        """Decline a request already known not to fit, without opening it.
+
+        The budget check used to be purely reactive: a dataset opened its
+        connection and was cut off at the ceiling, spending every byte it had
+        already pulled from a service that is rationing us. `last_response_bytes`
+        turns that into a decision made before the connection exists.
+
+        A dataset with no recorded size is attempted rather than refused.
+        Refusing the unknown would deadlock a fresh deployment — nothing records
+        a size without a fetch, so nothing would ever be fetched — and it is safe
+        because `_download` still bounds an unknown response to exactly the
+        allowance that is left. The worst case for an unknown dataset is
+        therefore the old reactive behaviour, not an overshoot.
+
+        A declined dataset deliberately does **not** advance `last_attempt`. It
+        never reached the network, and on state written before `retry_after`
+        existed `_next_attempt_at` still falls back to `last_attempt` plus the
+        two-hour floor — so recording an attempt here would push a genuine
+        request out by a full cycle to pay for one that never happened. The
+        consequence is that a declined dataset keeps its place at the front of
+        `_ordered_datasets`, and that is the direction that does not starve:
+        skipping is a `continue` and costs no network, so it cannot wedge the
+        queue the way a stopping failure did, and holding the front means the
+        dataset that has waited longest gets first claim on the allowance when
+        the 24-hour window rolls — rather than watching the small datasets
+        behind it nibble every refill away.
+        """
+
+        expected = self._expected_bytes(state)
+        if expected is None:
+            return None
+        if dataset.maximum_bytes is not None and expected > dataset.maximum_bytes:
+            # Not a budget condition, and not self-clearing either: the daily
+            # window rolls, a per-dataset cap does not. This dataset stays
+            # skipped until an operator raises the cap or upstream shrinks, so
+            # say so loudly — the only other symptom is its own staleness many
+            # hours later.
+            detail = f"expected {expected} bytes exceeds maximum_bytes {dataset.maximum_bytes}"
+            self._record_failure(dataset, state, "over-dataset-cap", detail)
+            LOGGER.warning(
+                "skipping GP dataset: larger than its configured cap",
+                extra={
+                    "dataset": dataset.name,
+                    "expected_bytes": expected,
+                    "maximum_bytes": dataset.maximum_bytes,
+                },
+            )
+            return "over-cap"
+        if expected > budget_remaining:
+            detail = f"expected {expected} bytes exceeds {budget_remaining} bytes of allowance"
+            self._record_failure(dataset, state, "budget-skipped", detail)
+            LOGGER.warning(
+                "skipping GP dataset: will not fit in the remaining daily allowance",
+                extra={
+                    "dataset": dataset.name,
+                    "expected_bytes": expected,
+                    "remaining_bytes": budget_remaining,
+                },
+            )
+            return "budget-skipped"
+        return None
+
+    @staticmethod
+    def _expected_bytes(state: DatasetState) -> int | None:
+        """Forecast this dataset's next response, or None if never observed."""
+
+        last = state.last_response_bytes
+        if last is None:
+            return None
+        return last + last * _SIZE_ESTIMATE_MARGIN_PERCENT // 100
+
+    def _stream_limit(self, dataset: GpDatasetConfig, budget_remaining: int) -> _StreamLimit:
+        """The lowest of the three ceilings bounding one response.
+
+        Ties resolve towards the shared limits, because `min` keeps the first
+        of equal keys and both run-wide bounds are listed ahead of the
+        dataset's own. Reporting a shared ceiling as one GROUP's problem would
+        send whoever reads the journal to the wrong knob.
+        """
+
+        limits = [
+            _StreamLimit(budget_remaining, "budget"),
+            _StreamLimit(self.config.gp.maximum_response_bytes, "response"),
+        ]
+        if dataset.maximum_bytes is not None:
+            limits.append(_StreamLimit(dataset.maximum_bytes, "dataset"))
+        return min(limits, key=lambda bound: bound.limit)
 
     def _handle_forbidden(self, dataset: GpDatasetConfig, state: DatasetState, body: bytes) -> str:
         """Separate "you already have this" from "you are being refused"."""
@@ -540,7 +736,7 @@ class GpUpdater:
         *,
         ledger: BandwidthLedger,
         now: datetime,
-        budget_remaining: int,
+        bound: _StreamLimit,
     ) -> tuple[int, bytes]:
         """Stream one response, accounting every byte that crosses the wire.
 
@@ -550,13 +746,13 @@ class GpUpdater:
         in the heaviest cases is not a backstop: two aborted 64 MiB responses
         would exceed the daily threshold while `daily_bytes` still read zero.
 
-        The remaining allowance also bounds the stream itself. Checking the
-        budget only between datasets leaves the ceiling overshootable by one
-        whole response, which at the configured 64 MiB response limit is most of
-        a day's allowance.
+        The bound is whichever ceiling is lowest, carried with its name because
+        the three mean different things when hit. Checking the budget only
+        between datasets leaves it overshootable by one whole response, which at
+        the configured 64 MiB response limit is most of a day's allowance.
         """
 
-        limit = min(self.config.gp.maximum_response_bytes, budget_remaining)
+        limit = bound.limit
         consumed = 0
         try:
             with client.stream("GET", url) as response:
@@ -576,7 +772,7 @@ class GpUpdater:
                 for chunk in response.iter_bytes():
                     consumed += len(chunk)
                     if consumed > limit:
-                        raise self._oversized(limit, consumed)
+                        raise self._oversized(bound, consumed)
                     chunks.append(chunk)
                 return response.status_code, b"".join(chunks)
         finally:
@@ -584,18 +780,24 @@ class GpUpdater:
             if consumed:
                 ledger.record(now, consumed)
 
-    def _oversized(self, limit: int, consumed: int) -> GpUpdateError:
+    @staticmethod
+    def _oversized(bound: _StreamLimit, consumed: int) -> GpUpdateError:
         """Name whichever ceiling the stream actually hit.
 
-        A genuinely huge GROUP and an exhausted daily allowance both abort the
-        stream, but they mean opposite things: the first is a dataset problem
-        worth stopping the run over, the second is the backstop working as
-        designed and the remaining datasets simply have nothing left to spend.
+        All three abort the same stream and mean entirely different things: an
+        exhausted allowance is the backstop working as designed and the
+        remaining datasets simply have nothing left to spend; a breached
+        per-dataset cap is one GROUP outgrowing its own ration; only a body over
+        the global response limit is unexplained enough to stop the run.
         """
 
-        if limit < self.config.gp.maximum_response_bytes:
+        if bound.source == "budget":
             return BudgetExceededError(f"daily byte budget exhausted after {consumed} bytes")
-        return StopGpRunError(f"response exceeded {limit} bytes")
+        if bound.source == "dataset":
+            return DatasetCapExceededError(
+                f"response exceeded this dataset's {bound.limit}-byte cap"
+            )
+        return StopGpRunError(f"response exceeded {bound.limit} bytes")
 
     @staticmethod
     def _describe(status: int, body: bytes) -> str:
@@ -644,6 +846,12 @@ class GpUpdater:
             "dataset": dataset.name,
             "query": dataset.query,
             "value": dataset.value,
+            # `last_response_bytes` arrives with the state document; the cap is
+            # configuration, and publishing it beside the size is what makes
+            # "which GROUP is eating the allowance, and was it rationed" an
+            # answerable question from the served tree alone, with no journal
+            # access. Additive: `schemaVersion` deliberately stays at 1.
+            "maximum_bytes": dataset.maximum_bytes,
             **document,
         }
         atomic_write_json(self._status_path(dataset), public)
