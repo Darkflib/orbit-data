@@ -90,7 +90,8 @@ daily at 06:17 UTC with up to 30 minutes of jitter and catches up after downtime
 
 If CelesTrak stops answering, `journalctl -u orbit-data-gp.service` now carries
 their refusal text verbatim, and `/v1/status/gp.json` reports `blocked` plus
-`daily_bytes` for the trailing 24 hours. A temporary block clears itself within
+`daily_bytes`, `budget_bytes` and `budget_remaining_bytes` for the trailing 24
+hours. A temporary block clears itself within
 two hours of the queries stopping (`systemctl stop orbit-data-gp.timer`); a
 firewall entry earned by sustained abuse needs a mail to `TS.Kelso@celestrak.org`
 quoting the IP address. See <https://celestrak.org/usage-policy.php>.
@@ -126,6 +127,26 @@ later — long after the two-hour window in which simply stopping clears a
 temporary CelesTrak block. `gp-run` goes critical on the first run that comes
 back `blocked`, and also catches a timer that has stopped firing at all, which
 per-dataset ages report only indirectly.
+
+Bandwidth is visible without the journal. `/v1/status/gp.json` carries
+`daily_bytes` against `budget_bytes` and `budget_remaining_bytes`, and each
+`/v1/status/gp/<name>.json` carries that dataset's `last_response_bytes` and its
+configured `maximum_bytes`, so the GROUP responsible for a spent allowance can
+be identified from the served tree alone:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/status/gp.json | jq '{daily_bytes, budget_bytes, budget_remaining_bytes}'
+curl -s http://127.0.0.1:8080/v1/status/gp/active.json | jq '{last_result, last_response_bytes, maximum_bytes}'
+```
+
+A dataset whose remembered size will not fit in what is left of the allowance is
+skipped before the connection is opened and records `last_result:
+"budget-skipped"`; the run summary reports `budget_exhausted` and `gp-run` warns.
+One that exceeds its own `maximum_bytes` records `last_result:
+"over-dataset-cap"` and keeps doing so on every run until an operator raises the
+cap — the shared allowance is not the problem there, and the run is not marked
+`budget_exhausted` for it. Both are visible immediately in
+`journalctl -u orbit-data-gp.service -p warning`.
 
 Warnings are logged and exit zero. Only a critical fails the unit, so alerting
 is an `OnFailure=` drop-in on `orbit-data-check.service`. **Nothing is wired up

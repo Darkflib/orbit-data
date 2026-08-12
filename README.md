@@ -14,7 +14,8 @@ The repository is being implemented in stages. It currently provides:
 - atomic static-file and release-directory publication;
 - bounded release retention;
 - a sequential, allow-listed CelesTrak OMM/JSON cache with a persistent
-  two-hour minimum request interval and a rolling daily byte budget;
+  two-hour minimum request interval, a rolling daily byte budget with
+  pre-flight size estimates, and optional per-dataset byte caps;
 - response-size, schema, physical-range, duplicate-ID, record-floor and
   record-drop validation;
 - last-known-good behaviour for HTTP, network and validation failures;
@@ -103,6 +104,36 @@ responses. Three things keep this service well under that:
   it has already spent. Datasets are skipped once the budget is gone.
 
 The current dataset list costs roughly 7.9 MB per run, or about 32 MB/day.
+
+The allowance is spent *before* the request, not during it. Each dataset
+remembers the size of its last complete response in
+`/data/state/gp/<name>.json`, and a dataset whose next response would not fit in
+what is left is skipped without opening the connection — being cut off
+mid-stream throws away every byte already pulled from a service that is
+rationing us. The estimate carries a small margin because catalogues grow
+between runs. A dataset that has never been measured is attempted: refusing the
+unknown would deadlock a fresh deployment, and the mid-stream ceiling still
+bounds it to exactly the allowance that remains.
+
+A skipped dataset does not record an attempt, because it never made one. It
+therefore keeps its place at the front of the least-recently-attempted queue,
+which is deliberate: skipping costs no network and does not stop the run, so it
+cannot wedge the datasets behind it, and holding the front means the dataset
+that has waited longest gets first claim on the allowance when the 24-hour
+window rolls.
+
+`[[gp.datasets]]` also takes an optional `maximum_bytes`, a ceiling for that one
+query so a single oversized GROUP cannot spend the shared allowance on its own.
+`active` is capped at 10 MiB against a current size of about 7.0 MB. The key is
+optional and absent means "only the shared allowance applies", so a deployed
+configuration predating it still loads. Breaching a per-dataset cap fails that
+dataset only; it neither stops the run nor reports the shared budget as spent.
+
+`/data/public/v1/status/gp.json` reports `daily_bytes`, `budget_bytes` and
+`budget_remaining_bytes` for the trailing 24 hours, and each
+`/data/public/v1/status/gp/<name>.json` carries that dataset's
+`last_response_bytes` and its configured `maximum_bytes`, so "which GROUP is
+eating the allowance" is answerable from the served tree without journal access.
 
 Run the slow-moving catalogue refresh with:
 

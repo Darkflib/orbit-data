@@ -38,6 +38,13 @@ class GpDatasetConfig:
     value: str
     minimum_records: int
     maximum_count_drop_fraction: float
+    # An optional ceiling for this query alone. `gp.maximum_daily_bytes` is
+    # shared, so without this one oversized GROUP can legitimately spend the
+    # entire allowance and leave the other eleven with nothing — the exact
+    # failure the `starlink` GROUP produced before it was dropped. Absent means
+    # only the shared allowance applies, which is the behaviour every deployed
+    # configuration predating this key already has.
+    maximum_bytes: int | None = None
 
 
 # Every field is an independently tunable retrieval or politeness bound.
@@ -180,12 +187,25 @@ def _gp_dataset(raw: Any, index: int, names: set[str]) -> GpDatasetConfig:
         raise ConfigError(f"{section}.maximum_count_drop_fraction must be a number")
     if not 0 <= maximum_drop <= 1:
         raise ConfigError(f"{section}.maximum_count_drop_fraction must be between 0 and 1")
+    # Optional rather than required, like `gp.maximum_daily_bytes` and the
+    # `[health]` thresholds: a per-dataset ceiling that refuses to load against a
+    # TOML predating it takes the whole updater offline exactly when the ceiling
+    # was supposed to protect it. The 1024-byte floor only rejects nonsense — a
+    # deliberately tiny cap is a valid way to park one GROUP.
+    maximum_bytes = raw.get("maximum_bytes")
+    if maximum_bytes is not None and (
+        not isinstance(maximum_bytes, int)
+        or isinstance(maximum_bytes, bool)
+        or maximum_bytes < 1024
+    ):
+        raise ConfigError(f"{section}.maximum_bytes must be an integer of at least 1024")
     return GpDatasetConfig(
         name=name,
         query=query,
         value=_non_empty_string(raw, "value", section),
         minimum_records=minimum_records,
         maximum_count_drop_fraction=float(maximum_drop),
+        maximum_bytes=maximum_bytes,
     )
 
 

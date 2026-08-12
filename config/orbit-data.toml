@@ -111,6 +111,14 @@ query = "GROUP"
 value = "active"
 minimum_records = 10000
 maximum_count_drop_fraction = 0.20
+# By far the largest remaining query now that `starlink` is gone: ~16,800
+# objects in the current SATCAT at roughly 418 uncompressed bytes per OMM
+# record, so about 7.0 MB per download — more than the other eleven combined.
+# 10 MiB leaves ~49% headroom for catalogue growth while keeping one GROUP from
+# quietly consuming the whole 80 MiB daily allowance if a query ever returns
+# something far larger than expected. Raise this deliberately rather than
+# letting it drift; it is a ration, not a size assertion.
+maximum_bytes = 10485760
 
 [[gp.datasets]]
 name = "special-decaying"

@@ -163,6 +163,7 @@ def test_spent_byte_budget_warns_rather_than_reading_as_healthy(tmp_path: Path) 
             "checked_at": NOW.isoformat(),
             "published": 2,
             "daily_bytes": 84 * 1024**2,
+            "budget_bytes": 80 * 1024**2,
             "blocked": False,
             "budget_exhausted": True,
         },
@@ -171,6 +172,9 @@ def test_spent_byte_budget_warns_rather_than_reading_as_healthy(tmp_path: Path) 
     check = _by_name(config, "gp-run")
 
     assert check.severity == WARNING
+    # The allowance is quoted beside the usage: an operator woken by this will
+    # not have the deployed TOML to hand.
+    assert "84.0 MiB/24h of 80 MiB" in check.detail
     # Last-known-good data is still served and the window refills on its own,
     # so this must not fail the unit.
     assert evaluate(config, now=NOW).successful
