@@ -168,6 +168,7 @@ def test_installer_stages_files_and_removes_obsolete_quadlet_timers(
         "orbit-data-check.container",
         "orbit-data-web.container",
     }
+    assert {path.name for path in obsolete_dir.glob("*.network")} == {"orbit-egress.network"}
     installed_timers = install_root / "etc" / "systemd" / "system"
     assert {path.name for path in installed_timers.glob("*.timer")} == {
         "orbit-data-gp.timer",

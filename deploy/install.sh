@@ -60,6 +60,7 @@ rm -f \
 
 install -m 0644 "$script_dir/Caddyfile" "$config_dir/Caddyfile"
 install -m 0644 "$script_dir/site/"* "$site_dir/"
+install -m 0644 "$script_dir/quadlet/"*.network "$quadlet_dir/"
 install -m 0644 "$script_dir/quadlet/"*.container "$quadlet_dir/"
 install -m 0644 "$script_dir/systemd/"*.timer "$systemd_dir/"
 
