@@ -4,7 +4,7 @@ table ip orbit_egress {
 
         ip saddr 10.89.60.0/24 oifname "ens3" \
             counter \
-            snat to 198.98.60.239 \
+            snat to 999.999.999.999 \
             comment "Orbit containers egress via 198.98.60.239"
     }
 }
