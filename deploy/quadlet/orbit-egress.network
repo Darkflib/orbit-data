@@ -1,0 +1,8 @@
+[Unit]
+Description=Orbit fixed egress network
+
+[Network]
+Driver=bridge
+Subnet=10.89.60.0/24
+Gateway=10.89.60.1
+

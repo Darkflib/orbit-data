@@ -8,6 +8,7 @@ Image=ghcr.io/darkflib/orbit-data:latest
 Pull=newer
 Exec=--config /etc/orbit-data.toml sync-catalog
 Volume=/srv/orbit-data:/data:rw
+Network=orbit-egress.network
 ReadOnly=true
 NoNewPrivileges=true
 DropCapability=all

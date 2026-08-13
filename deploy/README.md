@@ -54,6 +54,72 @@ the filesystem driver and distribution policy. Do not append `:Z` to a shared
 NFS/CIFS mount: relabelling a shared tree can affect other hosts, and NFS commonly
 cannot store SELinux labels.
 
+### Optional secondary outbound IP
+
+The `orbit-egress.network` Quadlet gives the updater containers a predictable
+bridge subnet, but it does not select a host source address by itself. Without
+an additional host firewall rule, traffic from that subnet uses the host's
+normal outbound address.
+
+To send updater traffic through a secondary IP, first configure that address on
+the host's external interface using the distribution's persistent network
+configuration. The address must be present after reboot and the upstream
+network must route it to the host. Identify the external interface and confirm
+the address before changing nftables, for example:
+
+```bash
+ip route get 1.1.1.1
+ip -brief address show dev ens3
+```
+
+Then install the supplied nftables fragment and edit it for the host:
+
+```bash
+sudo install -d -m 0755 /etc/nftables.d
+sudo install -m 0644 deploy/orbit-egress.nft /etc/nftables.d/orbit-egress.nft
+sudoedit /etc/nftables.d/orbit-egress.nft
+```
+
+Replace `oifname "ens3"` with the external interface and replace the address
+after `snat to` with the secondary IP. The `ip saddr` subnet must match
+`Subnet` in `deploy/quadlet/orbit-egress.network`; change both together if the
+default `10.89.60.0/24` conflicts with an existing network.
+
+Make the rule persistent by including the fragment once from the host's main
+nftables configuration, normally `/etc/nftables.conf`:
+
+```nftables
+include "/etc/nftables.d/orbit-egress.nft"
+```
+
+Validate the complete ruleset, then enable and reload it using the host's
+normal nftables procedure. On a systemd host where `nftables.service` owns
+`/etc/nftables.conf`, that is typically:
+
+```bash
+sudo nft --check --file /etc/nftables.conf
+sudo systemctl enable nftables.service
+sudo systemctl restart nftables.service
+sudo nft list table ip orbit_egress
+```
+
+Review the host firewall configuration before restarting it, because loading
+the main ruleset can replace active rules. If firewalld or another firewall
+manager owns nftables, add the equivalent SNAT rule through that manager rather
+than enabling a competing `nftables.service`.
+
+Activate and verify this rule before running `deploy/install.sh --start`. After
+an updater has made a request, the counter in the `postrouting` chain should
+increase and the remote service should observe the secondary IP:
+
+```bash
+sudo nft list chain ip orbit_egress postrouting
+```
+
+Repeat the secondary-address and firewall setup on every failover host that
+must provide the same outbound identity. This nftables integration is optional;
+hosts that should use their normal outbound address do not need it.
+
 ## First start
 
 Install and start the scheduled services, then initialize and populate the
