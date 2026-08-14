@@ -368,3 +368,66 @@ def test_derived_record_count_drop_is_rejected(tmp_path: Path) -> None:
 
     assert result.derived_failed == 1
     assert (root / "public/v1/gp/starlink.json").read_bytes() == published
+
+
+def test_conversion_from_fetched_clears_inherited_request_fields(tmp_path: Path) -> None:
+    """A dataset converted from fetched to derived inherits its old state file.
+
+    Nothing writes the request-shaped fields for a derived dataset, so leaving
+    them merely unset would strand the last real response in the status document
+    indefinitely — reading as a request this dataset does not make. The nine
+    groups this service converted all carried a `last_http_status` of 200.
+    """
+
+    _, root = _run(tmp_path, _mixed_payload(), datasets=_SOURCE_ONLY)
+    state_path = root / "state" / "gp" / "starlink.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_bytes(
+        orjson.dumps(
+            {
+                "last_attempt": "2026-08-10T18:06:22+00:00",
+                "last_success": "2026-08-10T18:06:22+00:00",
+                "last_result": "published",
+                "record_count": 3,
+                "last_http_status": 200,
+                "retry_after": "2026-08-10T20:11:22+00:00",
+                "last_response_bytes": 4_599_386,
+            }
+        )
+    )
+
+    config = make_config(tmp_path, datasets=_DERIVED_DATASETS)
+    result = GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(500)),
+        clock=lambda: NOW + timedelta(hours=1),
+    ).run()
+
+    assert result.derived_published == 3
+    status = orjson.loads((root / "public/v1/status/gp/starlink.json").read_bytes())
+    assert status["last_http_status"] is None
+    assert status["retry_after"] is None
+    assert status["last_response_bytes"] is None
+    # The fields that do apply are refreshed rather than cleared.
+    assert status["last_result"] == "published"
+    assert status["record_count"] == 3
+    assert status["derived_from"] == "active"
+
+
+def test_a_derived_failure_also_clears_inherited_request_fields(tmp_path: Path) -> None:
+    _, root = _run(tmp_path, _mixed_payload(), datasets=_SOURCE_ONLY)
+    (root / "public/v1/gp/active.json").write_bytes(b"{ not json")
+    state_path = root / "state" / "gp" / "starlink.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_bytes(orjson.dumps({"last_http_status": 200, "record_count": 3}))
+
+    config = make_config(tmp_path, datasets=_DERIVED_DATASETS)
+    GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(500)),
+        clock=lambda: NOW + timedelta(hours=1),
+    ).run()
+
+    status = orjson.loads((root / "public/v1/status/gp/starlink.json").read_bytes())
+    assert status["last_result"] == "source-unreadable"
+    assert status["last_http_status"] is None

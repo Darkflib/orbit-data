@@ -588,9 +588,6 @@ class GpUpdater:
         state.sha256 = metadata.sha256
         state.earliest_epoch = metadata.earliest_epoch
         state.latest_epoch = metadata.latest_epoch
-        # Deliberately left alone: `retry_after` and `last_http_status` describe
-        # a request, and this dataset never makes one. `last_response_bytes`
-        # likewise — `_preflight` forecasts a download that will never happen.
         self._save_derived_state(rule, state)
         LOGGER.info(
             "published derived GP dataset",
@@ -870,14 +867,28 @@ class GpUpdater:
     def _save_derived_state(self, rule: GpDerivedConfig, state: DatasetState) -> None:
         """Persist a derived dataset's state and its public status document.
 
-        The status document says how this dataset was produced rather than what
+        Every field describing a request is cleared on the way out, because this
+        dataset never makes one. Leaving them merely unset is not enough: a
+        dataset converted from fetched to derived inherits the state file it
+        already had, so its last real response would sit in the status document
+        indefinitely — nothing writes that field for a derived dataset again.
+        The nine groups this service converted all carried a `last_http_status`
+        of 200, which reads as a request that never happened and undercuts the
+        one question this document exists to answer.
+
+        The document then says how this dataset was produced rather than what
         was requested for it, so that a reader of the served tree can tell a
         filtered view from a fetched one without access to the configuration —
         which is the difference between "CelesTrak is stale" and "our own rule
-        stopped matching". Additive: `schemaVersion` stays at 1, and the keys a
-        fetched dataset carries about its request are simply absent.
+        stopped matching". Additive: `schemaVersion` stays at 1.
         """
 
+        state.last_http_status = None
+        state.retry_after = None
+        # `_preflight` forecasts a download this dataset will never make, so a
+        # size recorded against one is not a stale fact so much as an
+        # inapplicable one.
+        state.last_response_bytes = None
         document = asdict(state)
         atomic_write_json(self._state_path(rule.name), document)
         atomic_write_json(
