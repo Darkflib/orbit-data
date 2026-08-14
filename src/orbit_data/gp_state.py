@@ -22,6 +22,18 @@ from orbit_data.publishing import atomic_write_json
 LOGGER = logging.getLogger("orbit_data.gp")
 
 
+def state_path(root: Path, name: str) -> Path:
+    """Where one dataset's persistent state lives."""
+
+    return root / "state" / "gp" / f"{name}.json"
+
+
+def status_path(root: Path, name: str) -> Path:
+    """Where one dataset's public status document is served from."""
+
+    return root / "public" / "v1" / "status" / "gp" / f"{name}.json"
+
+
 class GpUpdateError(RuntimeError):
     """A GP update failed and the last-known-good file was retained."""
 
