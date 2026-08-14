@@ -25,6 +25,29 @@ connect_timeout_seconds = 10
 read_timeout_seconds = 90
 maximum_response_bytes = 67108864
 
+# Only three queries reach CelesTrak. Everything else this service publishes is
+# filtered out of `active` locally — see [[gp.derived]] below for why, and for
+# what that costs in fidelity.
+[[gp.datasets]]
+name = "active"
+query = "GROUP"
+value = "active"
+minimum_records = 10000
+maximum_count_drop_fraction = 0.20
+# The only large query left, and now the source for ten published datasets
+# rather than one: ~16,300 objects at roughly 418 uncompressed bytes per OMM
+# record, about 6.9 MB per download. 10 MiB leaves ~45% headroom for catalogue
+# growth while keeping a single GROUP from quietly consuming the whole 80 MiB
+# daily allowance if a query ever returns something far larger than expected.
+# Raise this deliberately rather than letting it drift; it is a ration, not a
+# size assertion.
+maximum_bytes = 10485760
+
+# Not derivable from `active`, and the reason this is still fetched. The group
+# is the ISS and CSS complexes, their visiting crew and cargo craft, and the
+# smallsats deployed from them — an editorial selection with no name pattern
+# and no orbital signature. It is also ~9 KB, so deriving it would save
+# nothing. Two of its members are debris that `active` does not carry at all.
 [[gp.datasets]]
 name = "stations"
 query = "GROUP"
@@ -32,100 +55,141 @@ value = "stations"
 minimum_records = 1
 maximum_count_drop_fraction = 0.35
 
-[[gp.datasets]]
-name = "gps-ops"
-query = "GROUP"
-value = "gps-ops"
-minimum_records = 1
-maximum_count_drop_fraction = 0.35
-
-[[gp.datasets]]
-name = "galileo"
-query = "GROUP"
-value = "galileo"
-minimum_records = 1
-maximum_count_drop_fraction = 0.35
-
-[[gp.datasets]]
-name = "glo-ops"
-query = "GROUP"
-value = "glo-ops"
-minimum_records = 1
-maximum_count_drop_fraction = 0.35
-
-[[gp.datasets]]
-name = "beidou"
-query = "GROUP"
-value = "beidou"
-minimum_records = 1
-maximum_count_drop_fraction = 0.35
-
-[[gp.datasets]]
-name = "geo"
-query = "GROUP"
-value = "geo"
-minimum_records = 1
-maximum_count_drop_fraction = 0.35
-
-[[gp.datasets]]
-name = "oneweb"
-query = "GROUP"
-value = "oneweb"
-minimum_records = 1
-maximum_count_drop_fraction = 0.35
-
-# The `starlink` GROUP is deliberately absent. It is ~10,900 objects and a
-# strict subset of `active`, which we already fetch; CelesTrak's documentation
-# names the pair explicitly ("There is no need to download the list of active
-# satellites and the list of all Starlink satellites, since the latter is a
-# subset of the former") and names Active and Starlink as the first two GROUPs
-# under one-download-per-update enforcement. Together they were ~11.6 MB of a
-# ~12.4 MB run, and at the old 2h10m cadence that put this service around
-# 133 MB/day against a documented 100 MB/day firewall threshold. Derive Starlink
-# from `active` downstream rather than restoring this entry.
-
-[[gp.datasets]]
-name = "kuiper"
-query = "GROUP"
-value = "kuiper"
-minimum_records = 1
-maximum_count_drop_fraction = 0.50
-
-[[gp.datasets]]
-name = "qianfan"
-query = "GROUP"
-value = "qianfan"
-minimum_records = 1
-maximum_count_drop_fraction = 0.50
-
-[[gp.datasets]]
-name = "hulianwang"
-query = "GROUP"
-value = "hulianwang"
-minimum_records = 1
-maximum_count_drop_fraction = 0.50
-
-[[gp.datasets]]
-name = "active"
-query = "GROUP"
-value = "active"
-minimum_records = 10000
-maximum_count_drop_fraction = 0.20
-# By far the largest remaining query now that `starlink` is gone: ~16,800
-# objects in the current SATCAT at roughly 418 uncompressed bytes per OMM
-# record, so about 7.0 MB per download — more than the other eleven combined.
-# 10 MiB leaves ~49% headroom for catalogue growth while keeping one GROUP from
-# quietly consuming the whole 80 MiB daily allowance if a query ever returns
-# something far larger than expected. Raise this deliberately rather than
-# letting it drift; it is a ration, not a size assertion.
-maximum_bytes = 10485760
-
+# Also not derivable: a curated watch list that is mostly *not* active. Of 77
+# objects on a recent pull, 12 were debris or spent rocket bodies absent from
+# `active` — a FENGYUN 1C fragment, a CZ-2C body, ISS debris. ~33 KB.
 [[gp.datasets]]
 name = "special-decaying"
 query = "SPECIAL"
 value = "DECAYING"
 minimum_records = 1
 maximum_count_drop_fraction = 0.90
+
+# ---------------------------------------------------------------------------
+# Derived datasets: published from `active`, no request of their own.
+#
+# CelesTrak enforces one download per update on the Active and Starlink GROUPs
+# and states plainly that fetching a GROUP alongside the Active list containing
+# it is the waste the policy exists to stop. Every constellation GROUP this
+# service used to fetch was confirmed a strict subset of `active` by comparing
+# NORAD catalogue numbers across a full pull of all twelve: 10,906 of 10,906
+# for starlink, and 100% for oneweb, kuiper, qianfan, hulianwang, geo and all
+# four GNSS groups. Only `stations` (2 debris objects) and `special-decaying`
+# (12) held anything `active` did not, which is why those two are still fetched.
+#
+# What `active` does not carry is membership — an OMM record does not say which
+# constellation it belongs to — so each rule below reconstructs it. The counts
+# in each comment are measured against CelesTrak's own grouping on a full pull,
+# stated as "extra" (we include, they do not) and "missing" (they include, we
+# do not). They are not zero, and they are not expected to become zero: the
+# `-ops` GNSS groups encode an operational-status judgement that no field in
+# the OMM record carries.
+#
+# Consumers see no difference: each publishes to /v1/gp/<name>.json exactly as
+# the fetched GROUP did.
+# ---------------------------------------------------------------------------
+
+# Restored here after being dropped as a fetch entirely. It was ~4.6 MB per
+# cycle and the first GROUP named under one-download-per-update enforcement;
+# as a filter it costs nothing. The 2 extra are objects named STARLINK that
+# CelesTrak had not (or no longer) placed in the group.
+[[gp.derived]]
+name = "starlink"
+source = "active"
+pattern = "^STARLINK"
+minimum_records = 5000
+maximum_count_drop_fraction = 0.20
+
+[[gp.derived]]
+name = "oneweb"
+source = "active"
+pattern = "^ONEWEB"
+minimum_records = 100
+maximum_count_drop_fraction = 0.35
+
+[[gp.derived]]
+name = "kuiper"
+source = "active"
+pattern = "^KUIPER"
+minimum_records = 50
+maximum_count_drop_fraction = 0.50
+
+[[gp.derived]]
+name = "qianfan"
+source = "active"
+pattern = "^QIANFAN"
+minimum_records = 50
+maximum_count_drop_fraction = 0.50
+
+# Guowang / China SatNet, which CelesTrak files under "hulianwang". The widest
+# of these rules: ~23 extra on a recent pull. Nine are HULIANWANG DIGUI craft
+# CelesTrak had not yet added to the group, five are HULIANWANG JISHU SHIYAN
+# technology demonstrators, and nine are GUOWANG OBJECT entries that duplicate
+# the names of group members under different catalogue numbers — genuinely
+# ambiguous by name, since the names are identical. Full recall is preferred
+# here over precision: the frontend resolves an object claimed by two layers by
+# priority, so an extra shows up as a colour, never as a duplicate.
+[[gp.derived]]
+name = "hulianwang"
+source = "active"
+pattern = "^(HULIANWANG|GUOWANG)"
+minimum_records = 50
+maximum_count_drop_fraction = 0.50
+
+# GPS. ~8 extra: decommissioned NAVSTARs still in orbit and still tracked,
+# which CelesTrak excludes from the operational `gps-ops` list. SATCAT's
+# OPS_STATUS_CODE would remove them exactly, but that lives in the catalogue
+# job on a different cadence, and coupling the two to drop eight satellites
+# from a colour-coded layer is not a trade worth making yet.
+[[gp.derived]]
+name = "gps-ops"
+source = "active"
+pattern = "^NAVSTAR"
+minimum_records = 20
+maximum_count_drop_fraction = 0.35
+
+# Galileo names its craft GSAT0101, GSAT0201 and so on. The four-digit run is
+# load-bearing: ISRO's unrelated GSAT-8, GSAT-30 and friends are hyphenated,
+# and a bare "^GSAT" pulls in 17 of them. Exact against the group as written.
+[[gp.derived]]
+name = "galileo"
+source = "active"
+pattern = "^GSAT\\d{4}"
+minimum_records = 20
+maximum_count_drop_fraction = 0.35
+
+# Exact against the group. GLONASS craft carry the constellation name in
+# parentheses after their COSMOS designation, so this is deliberately not
+# anchored to the start of the name.
+[[gp.derived]]
+name = "glo-ops"
+source = "active"
+pattern = "GLONASS"
+minimum_records = 15
+maximum_count_drop_fraction = 0.35
+
+# ~2 extra: BEIDOU-2 G1 and G3, retired GEO craft that CelesTrak drops from the
+# operational list while keeping G4. No name pattern separates them. Filtering
+# on operational status instead would remove both but also lose four genuine
+# members, so the two extra are the smaller error.
+[[gp.derived]]
+name = "beidou"
+source = "active"
+pattern = "^BEIDOU"
+minimum_records = 20
+maximum_count_drop_fraction = 0.35
+
+# An orbital regime rather than a family of names, so this selects on mean
+# motion alone. A true geosynchronous orbit is 1.0027 revolutions per day; the
+# window is wide enough to hold the drifting and inclined craft CelesTrak keeps
+# in the group. ~18 extra, nothing missing, on a recent pull.
+[[gp.derived]]
+name = "geo"
+source = "active"
+minimum_mean_motion = 0.95
+maximum_mean_motion = 1.05
+minimum_records = 200
+maximum_count_drop_fraction = 0.35
 
 [catalog]
 satcat_url = "https://celestrak.org/pub/satcat.csv"

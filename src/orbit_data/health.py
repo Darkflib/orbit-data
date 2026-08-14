@@ -23,7 +23,7 @@ from typing import Any
 
 import orjson
 
-from orbit_data.config import AppConfig
+from orbit_data.config import AppConfig, GpDatasetConfig, GpDerivedConfig
 
 OK = "ok"
 WARNING = "warning"
@@ -105,11 +105,22 @@ def _describe_age(age: float) -> str:
 
 
 def _check_gp(config: AppConfig, now: datetime) -> list[Check]:
-    """One check per configured dataset, keyed on its last successful publish."""
+    """One check per published dataset, keyed on its last successful publish.
+
+    Derived datasets are checked exactly like fetched ones. Their freshness is
+    their source's, so a stale `active` reports as a whole row of stale layers
+    rather than one — accurate, if repetitive. The case worth having them here
+    for is the other one: a filtering rule that stops matching while the fetch
+    keeps succeeding is otherwise invisible in this tree.
+    """
 
     status_root = config.storage.root / "public" / "v1" / "status" / "gp"
     checks: list[Check] = []
-    for dataset in config.gp.datasets:
+    published: tuple[GpDatasetConfig | GpDerivedConfig, ...] = (
+        *config.gp.datasets,
+        *config.gp.derived,
+    )
+    for dataset in published:
         name = f"gp:{dataset.name}"
         document = _read_json(status_root / f"{dataset.name}.json")
         if document is None:
@@ -166,6 +177,19 @@ def _check_gp_run(config: AppConfig, now: datetime) -> Check:
         # read as healthy — datasets are being skipped, and the only other
         # symptom is staleness that appears many hours later.
         return Check("gp-run", WARNING, f"daily byte budget spent; {detail}")
+    derived_failed = _as_int(document.get("derived_failed"))
+    if derived_failed:
+        # A derived rule that stops matching keeps its last-known-good file and
+        # its previous `last_success`, so the per-dataset age checks read
+        # healthy for hours. This is the only prompt signal that our own
+        # filtering, rather than CelesTrak, is what broke — and it is a warning
+        # rather than a critical because that retained file is still being
+        # served correctly, just not refreshed.
+        return Check(
+            "gp-run",
+            WARNING,
+            f"{derived_failed} derived dataset(s) failed to publish; {detail}",
+        )
     age = _age_seconds(document.get("checked_at"), now)
     if age is None:
         # A summary written by a release predating `checked_at`. The per-dataset

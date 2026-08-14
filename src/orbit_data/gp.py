@@ -8,12 +8,22 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 import orjson
 
-from orbit_data.config import AppConfig, GpDatasetConfig
+from orbit_data.config import AppConfig, GpDatasetConfig, GpDerivedConfig
+from orbit_data.gp_state import (
+    BandwidthLedger,
+    BudgetExceededError,
+    DatasetCapExceededError,
+    DatasetState,
+    GpUpdateError,
+    NetworkGpError,
+    StopGpRunError,
+)
 from orbit_data.locking import job_lock
 from orbit_data.omm import OmmMetadata, OmmValidationError, validate_omm_json
 from orbit_data.publishing import atomic_write_bytes, atomic_write_json, ensure_storage
@@ -52,113 +62,6 @@ _NETWORK_FAILURE_STOP_THRESHOLD = 2
 _SIZE_ESTIMATE_MARGIN_PERCENT = 5
 
 
-class GpUpdateError(RuntimeError):
-    """A GP update failed and the last-known-good file was retained."""
-
-
-class StopGpRunError(GpUpdateError):
-    """An upstream response requires stopping all remaining queries."""
-
-
-class BudgetExceededError(GpUpdateError):
-    """The rolling daily allowance ran out mid-stream.
-
-    Not a `StopGpRunError`: hitting the backstop is the design working, not an
-    upstream fault. The dataset fails, the run continues, and every remaining
-    dataset is skipped by the same budget check that would have caught this one
-    had its size been knowable in advance.
-    """
-
-
-class DatasetCapExceededError(GpUpdateError):
-    """One dataset outgrew its own `maximum_bytes` ceiling mid-stream.
-
-    Neither a stop nor a budget condition. `maximum_bytes` is our own policy
-    about one GROUP, so it fails that GROUP and leaves the run — and the rest of
-    the shared allowance, which is the whole point of having the cap — alone.
-    """
-
-    def __init__(self, message: str, consumed: int) -> None:
-        super().__init__(message)
-        # A lower bound on the true response size: the stream was cut at the
-        # cap, so it is at least this big. Carried on the exception because
-        # persisting it is the only thing that stops the next run re-learning
-        # the same lesson at CelesTrak's expense.
-        self.consumed = consumed
-
-
-class NetworkGpError(GpUpdateError):
-    """The request never reached CelesTrak, so no upstream budget was spent.
-
-    Distinct from `StopGpRunError` because the two demand opposite handling. An
-    HTTP response is CelesTrak telling us something, and their guidance is to
-    stop the whole run at the first non-200. A connect timeout is not a
-    response at all: it costs CelesTrak nothing, carries no instruction, and
-    must not be allowed to abort the twelve queries queued behind it.
-    """
-
-
-# The state mirrors the public status document; keeping the fields explicit
-# makes migrations and corruption checks safer than an untyped dictionary.
-# pylint: disable=too-many-instance-attributes
-@dataclass(slots=True)
-class DatasetState:
-    """Persistent retrieval and publication state for one query."""
-
-    last_attempt: str | None = None
-    last_success: str | None = None
-    last_http_status: int | None = None
-    last_result: str = "never-attempted"
-    error: str | None = None
-    record_count: int | None = None
-    sha256: str | None = None
-    earliest_epoch: str | None = None
-    latest_epoch: str | None = None
-    # The earliest instant this dataset may be requested again. Written before
-    # every request so that the floor survives a crash, and shortened only when
-    # we know CelesTrak never received the request.
-    retry_after: str | None = None
-    # Size of the last complete 200 response, on the persistent volume for the
-    # same reason `retry_after` is: it is what lets the *next* run decline a
-    # request it already knows cannot finish inside the allowance. `None` means
-    # never observed, which includes every dataset whose state was written by a
-    # release predating this field — `load` fills it from the default.
-    last_response_bytes: int | None = None
-
-    @classmethod
-    def load(cls, path: Path) -> DatasetState:
-        """Load state, refusing to guess if a persisted file is corrupt."""
-
-        if not path.exists():
-            return cls()
-        try:
-            document = orjson.loads(path.read_bytes())
-            if not isinstance(document, dict):
-                raise ValueError("state is not an object")
-            state = cls(**document)
-            for field_name in ("last_attempt", "last_success", "retry_after"):
-                raw = getattr(state, field_name)
-                if raw is not None and datetime.fromisoformat(raw).tzinfo is None:
-                    raise ValueError(f"{field_name} has no timezone")
-            # Checked here rather than left to the arithmetic in
-            # `_expected_bytes`: a string or a list in this field would raise
-            # `TypeError` there, which is not a `GpUpdateError` and so escapes
-            # the per-dataset handling in `run` — taking down the whole updater,
-            # the run summary and every later dataset over one corrupt file.
-            # Corruption has to stay isolated to the dataset that owns it.
-            size = state.last_response_bytes
-            if size is not None and (
-                not isinstance(size, int) or isinstance(size, bool) or size < 0
-            ):
-                raise ValueError("last_response_bytes must be a non-negative integer")
-            return state
-        except (OSError, TypeError, ValueError, orjson.JSONDecodeError) as exc:
-            raise GpUpdateError(f"invalid persistent state for {path.stem}: {exc}") from exc
-
-
-# pylint: enable=too-many-instance-attributes
-
-
 # Counters plus the two things an operator actually needs on a bad day: whether
 # CelesTrak is refusing us, and how much of the daily allowance is gone.
 # pylint: disable=too-many-instance-attributes
@@ -189,12 +92,18 @@ class GpRunResult:
     # healthy run until the per-dataset ages age out many hours later.
     budget_exhausted: bool = False
     stop_reason: str | None = None
+    # Counted apart from `attempted`/`published`/`failed`, which exist to
+    # describe what this service asked of CelesTrak. A derived dataset makes no
+    # request at all, so folding it into those totals would misreport the one
+    # number the one-download-per-update policy is measured against.
+    derived_published: int = 0
+    derived_failed: int = 0
 
     @property
     def successful(self) -> bool:
         """Return whether the job completed without a dataset failure."""
 
-        return self.failed == 0 and not self.stopped
+        return self.failed == 0 and self.derived_failed == 0 and not self.stopped
 
 
 # pylint: enable=too-many-instance-attributes
@@ -215,79 +124,6 @@ class _StreamLimit:
     source: str
 
 
-class BandwidthLedger:
-    """Rolling 24-hour record of bytes fetched from CelesTrak.
-
-    CelesTrak firewalls IP addresses that pull more than 100 MB/day, and gp.php
-    serves no compression, so the allowance is spent in whole uncompressed
-    responses. The ledger lives on the persistent volume beside the request
-    floor, for the same reason: a restart, or moving the volume to the failover
-    host, must not hand the process a fresh allowance it has already spent.
-    """
-
-    _WINDOW = timedelta(days=1)
-
-    def __init__(self, path: Path, now: datetime) -> None:
-        self.path = path
-        self._entries = self._load(path, now)
-
-    @staticmethod
-    def _load(path: Path, now: datetime) -> list[tuple[datetime, int]]:
-        try:
-            document = orjson.loads(path.read_bytes())
-        except FileNotFoundError:
-            return []
-        except (OSError, orjson.JSONDecodeError) as exc:
-            # Deliberately fail open, unlike DatasetState. Corrupt dataset state
-            # blocks one query; refusing to run without a readable ledger would
-            # block all of them, and this is the backstop rather than the
-            # primary control. Losing a window of accounting is the smaller harm
-            # — but it is not silent.
-            LOGGER.warning("discarding unreadable bandwidth ledger", extra={"error": str(exc)})
-            return []
-        raw = document.get("entries") if isinstance(document, dict) else None
-        if not isinstance(raw, list):
-            return []
-        entries: list[tuple[datetime, int]] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            at, count = item.get("at"), item.get("bytes")
-            if not isinstance(at, str) or not isinstance(count, int) or isinstance(count, bool):
-                continue
-            try:
-                moment = datetime.fromisoformat(at)
-            except ValueError:
-                continue
-            if moment.tzinfo is not None and now - moment < BandwidthLedger._WINDOW:
-                entries.append((moment, count))
-        return entries
-
-    def used(self) -> int:
-        """Bytes fetched inside the trailing 24-hour window."""
-
-        return sum(count for _, count in self._entries)
-
-    def record(self, now: datetime, count: int) -> None:
-        """Add one response to the window and persist it immediately.
-
-        Persisted per response rather than per run so that a run killed by
-        `TimeoutStartSec=` still accounts for what it already pulled.
-        """
-
-        self._entries = [entry for entry in self._entries if now - entry[0] < self._WINDOW]
-        self._entries.append((now.astimezone(UTC), count))
-        atomic_write_json(
-            self.path,
-            {
-                "schemaVersion": 1,
-                "entries": [
-                    {"at": moment.isoformat(), "bytes": size} for moment, size in self._entries
-                ],
-            },
-        )
-
-
 class GpUpdater:
     """Fetch configured datasets sequentially and publish validated snapshots."""
 
@@ -302,6 +138,8 @@ class GpUpdater:
         self.transport = transport
         self.clock = clock or (lambda: datetime.now(tz=UTC))
         self._downloaded = 0
+        self._derived_published = 0
+        self._derived_failed = 0
         ensure_storage(config.storage.root)
 
     def _now(self) -> datetime:
@@ -328,6 +166,7 @@ class GpUpdater:
         # Per-run, not per-updater: `sync-gp` builds one updater, but tests and
         # any future caller may reuse one across runs.
         self._downloaded = 0
+        self._derived_published = self._derived_failed = 0
         started = self._now()
         with job_lock(self.config.storage.root / "locks" / "gp.lock"):
             ledger = BandwidthLedger(self._ledger_path(), started)
@@ -443,6 +282,12 @@ class GpUpdater:
                         stop_reason = "forbidden"
                         break
 
+            # Outside the client block: derivation touches only the volume, so
+            # it runs even when the fetch loop stopped early. A run refused by
+            # CelesTrak still leaves a good `active.json` on disk, and a rule
+            # added since the last run has no other chance to catch up.
+            self._sync_derived()
+
             result = GpRunResult(
                 attempted=attempted,
                 published=published,
@@ -456,6 +301,8 @@ class GpUpdater:
                 blocked=blocked,
                 budget_exhausted=budget_exhausted,
                 stop_reason=stop_reason,
+                derived_published=self._derived_published,
+                derived_failed=self._derived_failed,
             )
             self._write_summary(result, now=started)
         return result
@@ -485,7 +332,7 @@ class GpUpdater:
         def key(item: tuple[int, GpDatasetConfig]) -> tuple[datetime, int]:
             index, dataset = item
             try:
-                state = DatasetState.load(self._state_path(dataset))
+                state = DatasetState.load(self._state_path(dataset.name))
             except GpUpdateError:
                 # Corrupt state sorts first so `_update_dataset` reports it
                 # promptly rather than leaving it unexplained at the back.
@@ -503,7 +350,7 @@ class GpUpdater:
         ledger: BandwidthLedger,
         budget_remaining: int,
     ) -> str:
-        state_path = self._state_path(dataset)
+        state_path = self._state_path(dataset.name)
         state = DatasetState.load(state_path)
         now = self._now()
         due_at = self._next_attempt_at(state)
@@ -626,6 +473,161 @@ class GpUpdater:
             },
         )
         return "published"
+
+    def _sync_derived(self) -> None:
+        """Bring every derived dataset up to date with its published source.
+
+        Deliberately a reconciliation against what is on the volume rather than
+        a step hung off a successful fetch. Derivation needs the *records*, not
+        the response that carried them, and the three commonest states of a
+        healthy run supply no response at all: a source inside its request floor
+        is skipped, a routine "not updated" 403 is the steady state under
+        one-download-per-update, and a fresh deployment starts with neither. In
+        every one of those a perfectly good `active.json` is sitting on disk. A
+        derive-on-response path would leave its subsets missing until CelesTrak
+        next happened to update — on a new volume, missing entirely, which
+        `check-health` reports as critical.
+
+        Reading the published file back also collapses the two paths into one:
+        the file is written atomically before its state records the success, so
+        a source published seconds ago in this very run is picked up here by the
+        same code that recovers one published days ago.
+
+        A derived failure never propagates. No CelesTrak request is at stake, so
+        failing the run would punish a healthy fetch for a local filtering fault
+        — and, because `_ordered_datasets` sorts on `last_attempt`, would keep
+        re-punishing the same one. The counters and the retained file surface it.
+        """
+
+        for source_name, rules in self._derived_by_source().items():
+            source_success = DatasetState.load(self._state_path(source_name)).last_success
+            if source_success is None:
+                # Nothing has ever been published under this name, so there is
+                # no cached payload to filter. Not a failure: the first
+                # successful fetch brings every rule below it along.
+                continue
+            # Keyed on the source's publication instant rather than a timestamp
+            # of our own, so a derived dataset is exactly as fresh as what it
+            # was filtered from — which makes this both an idempotency check and
+            # an honest answer for the age check in `check-health`.
+            stale = [
+                rule
+                for rule in rules
+                if DatasetState.load(self._state_path(rule.name)).last_success != source_success
+            ]
+            if not stale:
+                continue
+            try:
+                records = self._published_records(source_name)
+            except GpUpdateError as exc:
+                for rule in stale:
+                    self._fail_derived(rule, "source-unreadable", str(exc))
+                continue
+            for rule in stale:
+                try:
+                    self._publish_derived(rule, records, source_success)
+                except OmmValidationError as exc:
+                    self._fail_derived(rule, "validation-error", str(exc))
+                else:
+                    self._derived_published += 1
+
+    def _derived_by_source(self) -> dict[str, list[GpDerivedConfig]]:
+        """Group the rules so one source is read and parsed at most once."""
+
+        grouped: dict[str, list[GpDerivedConfig]] = {}
+        for rule in self.config.gp.derived:
+            grouped.setdefault(rule.source, []).append(rule)
+        return grouped
+
+    def _published_records(self, source_name: str) -> list[Any]:
+        """Re-read a source this service already published and validated."""
+
+        path = self.config.storage.root / "public" / "v1" / "gp" / f"{source_name}.json"
+        try:
+            records = orjson.loads(path.read_bytes())
+        except (OSError, orjson.JSONDecodeError) as exc:
+            raise GpUpdateError(f"cannot read published source {source_name}: {exc}") from exc
+        if not isinstance(records, list):
+            raise GpUpdateError(f"published source {source_name} is not a JSON array")
+        return records
+
+    def _fail_derived(self, rule: GpDerivedConfig, result: str, error: str) -> None:
+        """Record a derived failure without disturbing its last-known-good file."""
+
+        state = DatasetState.load(self._state_path(rule.name))
+        state.last_result = result
+        state.error = error
+        self._save_derived_state(rule, state)
+        self._derived_failed += 1
+        LOGGER.error(
+            "derived GP dataset failed",
+            extra={"dataset": rule.name, "source": rule.source, "error": error},
+        )
+
+    def _publish_derived(
+        self, rule: GpDerivedConfig, records: list[Any], source_success: str
+    ) -> None:
+        """Filter, validate and publish one derived dataset."""
+
+        state = DatasetState.load(self._state_path(rule.name))
+        selected = [record for record in records if self._selects(rule, record)]
+        payload = orjson.dumps(selected)
+        # The same guard a fetched dataset gets, and it earns its place here for
+        # a different reason: upstream renaming a family of objects would
+        # silently empty a layer, and the count floor is the only thing that
+        # notices before a user does.
+        metadata = validate_omm_json(payload, rule, previous_record_count=state.record_count)
+
+        atomic_write_bytes(
+            self.config.storage.root / "public" / "v1" / "gp" / f"{rule.name}.json", payload
+        )
+        state.last_attempt = state.last_success = source_success
+        state.last_result = "published"
+        state.error = None
+        state.record_count = metadata.record_count
+        state.sha256 = metadata.sha256
+        state.earliest_epoch = metadata.earliest_epoch
+        state.latest_epoch = metadata.latest_epoch
+        # Deliberately left alone: `retry_after` and `last_http_status` describe
+        # a request, and this dataset never makes one. `last_response_bytes`
+        # likewise — `_preflight` forecasts a download that will never happen.
+        self._save_derived_state(rule, state)
+        LOGGER.info(
+            "published derived GP dataset",
+            extra={
+                "dataset": rule.name,
+                "source": rule.source,
+                "records": metadata.record_count,
+                "sha256": metadata.sha256,
+            },
+        )
+
+    @staticmethod
+    def _selects(rule: GpDerivedConfig, record: Any) -> bool:
+        """Whether one source record belongs to a derived dataset.
+
+        Every predicate configured must hold. A record that cannot be tested —
+        a name that is not a string, a mean motion that will not parse — is
+        excluded rather than admitted: a derived dataset publishing a record it
+        could not classify is worse than one that is short by it, and the count
+        guards catch the case where that starts happening at scale.
+        """
+
+        if not isinstance(record, dict):
+            return False
+        if rule.pattern is not None:
+            name = record.get("OBJECT_NAME")
+            if not isinstance(name, str) or not rule.pattern.search(name):
+                return False
+        if rule.minimum_mean_motion is None and rule.maximum_mean_motion is None:
+            return True
+        try:
+            mean_motion = float(record["MEAN_MOTION"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if rule.minimum_mean_motion is not None and mean_motion < rule.minimum_mean_motion:
+            return False
+        return not (rule.maximum_mean_motion is not None and mean_motion > rule.maximum_mean_motion)
 
     def _preflight(
         self,
@@ -865,9 +867,35 @@ class GpUpdater:
         state.error = error
         self._save_state(dataset, state)
 
+    def _save_derived_state(self, rule: GpDerivedConfig, state: DatasetState) -> None:
+        """Persist a derived dataset's state and its public status document.
+
+        The status document says how this dataset was produced rather than what
+        was requested for it, so that a reader of the served tree can tell a
+        filtered view from a fetched one without access to the configuration —
+        which is the difference between "CelesTrak is stale" and "our own rule
+        stopped matching". Additive: `schemaVersion` stays at 1, and the keys a
+        fetched dataset carries about its request are simply absent.
+        """
+
+        document = asdict(state)
+        atomic_write_json(self._state_path(rule.name), document)
+        atomic_write_json(
+            self._status_path(rule.name),
+            {
+                "schemaVersion": 1,
+                "dataset": rule.name,
+                "derived_from": rule.source,
+                "pattern": rule.pattern.pattern if rule.pattern is not None else None,
+                "minimum_mean_motion": rule.minimum_mean_motion,
+                "maximum_mean_motion": rule.maximum_mean_motion,
+                **document,
+            },
+        )
+
     def _save_state(self, dataset: GpDatasetConfig, state: DatasetState) -> None:
         document = asdict(state)
-        atomic_write_json(self._state_path(dataset), document)
+        atomic_write_json(self._state_path(dataset.name), document)
         public = {
             "schemaVersion": 1,
             "dataset": dataset.name,
@@ -881,7 +909,7 @@ class GpUpdater:
             "maximum_bytes": dataset.maximum_bytes,
             **document,
         }
-        atomic_write_json(self._status_path(dataset), public)
+        atomic_write_json(self._status_path(dataset.name), public)
 
     def _write_summary(self, result: GpRunResult, *, now: datetime) -> None:
         atomic_write_json(
@@ -917,8 +945,11 @@ class GpUpdater:
         query = urlencode({dataset.query: dataset.value, "FORMAT": "JSON"})
         return f"{self.config.gp.base_url}{separator}{query}"
 
-    def _state_path(self, dataset: GpDatasetConfig) -> Path:
-        return self.config.storage.root / "state" / "gp" / f"{dataset.name}.json"
+    # Keyed on the name rather than the dataset because fetched and derived
+    # datasets publish into the same two directories; `config` rejects a name
+    # used by both, so a name is enough to identify either.
+    def _state_path(self, name: str) -> Path:
+        return self.config.storage.root / "state" / "gp" / f"{name}.json"
 
-    def _status_path(self, dataset: GpDatasetConfig) -> Path:
-        return self.config.storage.root / "public" / "v1" / "status" / "gp" / f"{dataset.name}.json"
+    def _status_path(self, name: str) -> Path:
+        return self.config.storage.root / "public" / "v1" / "status" / "gp" / f"{name}.json"
