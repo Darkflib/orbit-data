@@ -404,10 +404,12 @@ def test_conversion_from_fetched_clears_inherited_request_fields(tmp_path: Path)
     ).run()
 
     assert result.derived_published == 3
+    state = orjson.loads(state_path.read_bytes())
     status = orjson.loads((root / "public/v1/status/gp/starlink.json").read_bytes())
-    assert status["last_http_status"] is None
-    assert status["retry_after"] is None
-    assert status["last_response_bytes"] is None
+    for document in (state, status):
+        assert document["last_http_status"] is None
+        assert document["retry_after"] is None
+        assert document["last_response_bytes"] is None
     # The fields that do apply are refreshed rather than cleared.
     assert status["last_result"] == "published"
     assert status["record_count"] == 3
@@ -419,7 +421,16 @@ def test_a_derived_failure_also_clears_inherited_request_fields(tmp_path: Path) 
     (root / "public/v1/gp/active.json").write_bytes(b"{ not json")
     state_path = root / "state" / "gp" / "starlink.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_bytes(orjson.dumps({"last_http_status": 200, "record_count": 3}))
+    state_path.write_bytes(
+        orjson.dumps(
+            {
+                "last_http_status": 200,
+                "retry_after": "2026-08-10T20:11:22+00:00",
+                "last_response_bytes": 4_599_386,
+                "record_count": 3,
+            }
+        )
+    )
 
     config = make_config(tmp_path, datasets=_DERIVED_DATASETS)
     GpUpdater(
@@ -428,6 +439,82 @@ def test_a_derived_failure_also_clears_inherited_request_fields(tmp_path: Path) 
         clock=lambda: NOW + timedelta(hours=1),
     ).run()
 
+    state = orjson.loads(state_path.read_bytes())
     status = orjson.loads((root / "public/v1/status/gp/starlink.json").read_bytes())
     assert status["last_result"] == "source-unreadable"
-    assert status["last_http_status"] is None
+    for document in (state, status):
+        assert document["last_http_status"] is None
+        assert document["retry_after"] is None
+        assert document["last_response_bytes"] is None
+
+
+def test_current_derived_datasets_are_repaired_without_republishing(tmp_path: Path) -> None:
+    """The upgrade case: the conversion already completed on an earlier release.
+
+    A volume that has run the derived release once has every rule's
+    `last_success` equal to its source, so nothing below rebuilds it — yet the
+    inherited request fields are still there, and no later pass would revisit
+    them. They would sit in the published status document until the source
+    happened to publish again, which for a source that stops updating is never.
+    """
+
+    _, root = _run(tmp_path, _mixed_payload())
+    published = root / "public/v1/gp/starlink.json"
+    before = published.stat().st_mtime_ns
+    state_path = root / "state" / "gp" / "starlink.json"
+
+    # Exactly what the fetched-era release left behind, on a state that is
+    # otherwise a current view of the source.
+    state = orjson.loads(state_path.read_bytes())
+    state |= {
+        "last_http_status": 200,
+        "retry_after": "2026-08-10T20:11:22+00:00",
+        "last_response_bytes": 4_599_386,
+    }
+    state_path.write_bytes(orjson.dumps(state))
+
+    config = make_config(tmp_path, datasets=_DERIVED_DATASETS)
+    result = GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(500)),
+        clock=lambda: NOW + timedelta(hours=1),
+    ).run()
+
+    # Nothing was republished — the records did not change.
+    assert (result.derived_published, result.derived_failed) == (0, 0)
+    repaired = orjson.loads(state_path.read_bytes())
+    status = orjson.loads((root / "public/v1/status/gp/starlink.json").read_bytes())
+    for document in (repaired, status):
+        assert document["last_http_status"] is None
+        assert document["retry_after"] is None
+        assert document["last_response_bytes"] is None
+    assert status["record_count"] == 3
+    # The published file keeps its mtime. The browser derives freshness from
+    # Last-Modified, so moving it for a metadata repair would report the data as
+    # newer than the epochs inside it.
+    assert published.stat().st_mtime_ns == before
+
+
+def test_corrupt_derived_state_is_discarded_rather_than_failing_the_run(tmp_path: Path) -> None:
+    """`_sync_derived` sits outside the per-dataset handling `run` gives a query.
+
+    A raised `GpUpdateError` here would take down the whole updater over one
+    unreadable file. A derived dataset's state is reconstructible from its
+    source, so it is discarded and rebuilt instead.
+    """
+
+    _, root = _run(tmp_path, _mixed_payload(), datasets=_SOURCE_ONLY)
+    state_path = root / "state" / "gp" / "starlink.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_bytes(b"{ not json")
+
+    config = make_config(tmp_path, datasets=_DERIVED_DATASETS)
+    result = GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(500)),
+        clock=lambda: NOW + timedelta(hours=1),
+    ).run()
+
+    assert (result.derived_published, result.derived_failed) == (3, 0)
+    assert _names(root, "starlink") == ["STARLINK-1008", "STARLINK-1012", "STARLINK-9001"]
+    assert (root / "public/v1/status/gp.json").exists()
