@@ -16,6 +16,8 @@ The repository is being implemented in stages. It currently provides:
 - a sequential, allow-listed CelesTrak OMM/JSON cache with a persistent
   two-hour minimum request interval, a rolling daily byte budget with
   pre-flight size estimates, and optional per-dataset byte caps;
+- derived datasets filtered out of an already-fetched one, so a constellation
+  that is a strict subset of `active` is published without being downloaded;
 - response-size, schema, physical-range, duplicate-ID, record-floor and
   record-drop validation;
 - last-known-good behaviour for HTTP, network and validation failures;
@@ -96,14 +98,15 @@ responses. Three things keep this service well under that:
 
 - the timer fires every 6h, not at the 2h floor — the underlying 18 SDS GP data
   only updates 2-3 times a day, so faster polling downloads identical bytes;
-- the `starlink` GROUP is not fetched, because it is a strict subset of `active`
-  and CelesTrak names the pair as redundant. Derive it downstream;
+- only three queries are made at all. Every constellation GROUP this service
+  used to fetch was confirmed a strict subset of `active`, so it is now filtered
+  out of `active` locally instead — see [Derived datasets](#derived-datasets);
 - `gp.maximum_daily_bytes` is a hard backstop. Bytes fetched are recorded in a
   rolling 24-hour ledger at `/data/state/gp-bandwidth.json`, on the persistent
   volume so a restart or a volume failover cannot hand the process an allowance
   it has already spent. Datasets are skipped once the budget is gone.
 
-The current dataset list costs roughly 7.9 MB per run, or about 32 MB/day.
+The current dataset list costs roughly 6.9 MB per run, or about 28 MB/day.
 
 The allowance is spent *before* the request, not during it. Each dataset
 remembers the size of its last complete response in
@@ -134,6 +137,53 @@ dataset only; it neither stops the run nor reports the shared budget as spent.
 `/data/public/v1/status/gp/<name>.json` carries that dataset's
 `last_response_bytes` and its configured `maximum_bytes`, so "which GROUP is
 eating the allowance" is answerable from the served tree without journal access.
+
+### Derived datasets
+
+CelesTrak enforces one download per update on the Active and Starlink GROUPs,
+and states plainly that fetching a GROUP alongside the Active list containing it
+is the waste that policy exists to stop. Comparing NORAD catalogue numbers
+across a full pull of all twelve GROUPs this service used to fetch confirmed the
+overlap exactly: `starlink`, `oneweb`, `kuiper`, `qianfan`, `hulianwang`, `geo`
+and all four GNSS groups were each a strict subset of `active`, down to the last
+object. Only `stations` (2 debris objects) and `SPECIAL=DECAYING` (12 rocket
+bodies and debris) held anything `active` did not.
+
+So three queries are made, and everything else is filtered out of `active`
+locally. What `active` does not carry is *membership* — an OMM record does not
+say which constellation it belongs to — so each `[[gp.derived]]` rule
+reconstructs it from `OBJECT_NAME`, from `MEAN_MOTION`, or both:
+
+```toml
+[[gp.derived]]
+name = "starlink"
+source = "active"
+pattern = "^STARLINK"
+minimum_records = 5000
+maximum_count_drop_fraction = 0.20
+```
+
+Each derived dataset publishes to `/v1/gp/<name>.json` exactly where the fetched
+GROUP did, so consumers see no difference. It is validated with the same record
+and count guards as a fetched response, so a rule that stops matching — upstream
+renaming a family of objects — fails loudly instead of silently emptying a
+layer. Derivation runs only after its source has been published successfully,
+and a derived failure never fails the source: no CelesTrak request is at stake,
+so the run continues and `derived_failed` in the run summary reports it.
+
+The reconstruction is deliberately approximate, and the shipped configuration
+documents the measured difference against CelesTrak's own grouping for each
+rule. Recall is complete — nothing CelesTrak lists is missing — but some rules
+select a few extra: 8 decommissioned NAVSTARs that `gps-ops` excludes as
+non-operational, 2 retired BeiDou-2 GEO craft, 18 objects near the
+geosynchronous belt, and 23 Guowang-related objects. Those `-ops` distinctions
+encode an operational-status judgement that no field in the OMM record carries.
+The frontend resolves an object claimed by two layers by priority, so an extra
+shows up as a colour rather than a duplicate.
+
+`/data/public/v1/status/gp/<name>.json` names the source and the rule for a
+derived dataset, so the served tree distinguishes "CelesTrak is stale" from "our
+own filter stopped matching" without access to the configuration.
 
 Run the slow-moving catalogue refresh with:
 

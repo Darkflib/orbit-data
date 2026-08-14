@@ -6,11 +6,28 @@ import hashlib
 import math
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 import orjson
 
-from orbit_data.config import GpDatasetConfig
+
+class RecordBounds(Protocol):
+    """The count guards a publishable dataset carries.
+
+    Structural rather than a concrete type because fetched and derived datasets
+    are validated identically but share no base class: one describes a CelesTrak
+    query, the other a filter over another dataset's records. Both are checked
+    against the same two bounds before anything reaches the public tree.
+    """
+
+    @property
+    def minimum_records(self) -> int:
+        """Fewest records a publishable response may contain."""
+
+    @property
+    def maximum_count_drop_fraction(self) -> float:
+        """Largest share of the previous count that may disappear at once."""
+
 
 REQUIRED_FIELDS = frozenset(
     {
@@ -100,7 +117,7 @@ def _validate_record(item: Any, index: int) -> tuple[int, datetime]:
 
 def validate_omm_json(
     payload: bytes,
-    dataset: GpDatasetConfig,
+    dataset: RecordBounds,
     *,
     previous_record_count: int | None,
 ) -> OmmMetadata:

@@ -23,7 +23,7 @@ from typing import Any
 
 import orjson
 
-from orbit_data.config import AppConfig
+from orbit_data.config import AppConfig, GpDatasetConfig, GpDerivedConfig
 
 OK = "ok"
 WARNING = "warning"
@@ -105,11 +105,22 @@ def _describe_age(age: float) -> str:
 
 
 def _check_gp(config: AppConfig, now: datetime) -> list[Check]:
-    """One check per configured dataset, keyed on its last successful publish."""
+    """One check per published dataset, keyed on its last successful publish.
+
+    Derived datasets are checked exactly like fetched ones. Their freshness is
+    their source's, so a stale `active` reports as a whole row of stale layers
+    rather than one — accurate, if repetitive. The case worth having them here
+    for is the other one: a filtering rule that stops matching while the fetch
+    keeps succeeding is otherwise invisible in this tree.
+    """
 
     status_root = config.storage.root / "public" / "v1" / "status" / "gp"
     checks: list[Check] = []
-    for dataset in config.gp.datasets:
+    published: tuple[GpDatasetConfig | GpDerivedConfig, ...] = (
+        *config.gp.datasets,
+        *config.gp.derived,
+    )
+    for dataset in published:
         name = f"gp:{dataset.name}"
         document = _read_json(status_root / f"{dataset.name}.json")
         if document is None:

@@ -47,6 +47,40 @@ class GpDatasetConfig:
     maximum_bytes: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class GpDerivedConfig:
+    """One dataset published by filtering another, with no request of its own.
+
+    CelesTrak enforces one download per update on the Active and Starlink
+    GROUPs, and their guidance is explicit that fetching a GROUP alongside the
+    Active list it is already contained in is the waste that policy exists to
+    stop. Every constellation GROUP this service used to fetch was a strict
+    subset of `active` — verified against a full catalogue pull, not assumed —
+    so the elements were redundant on arrival. What was *not* redundant was the
+    membership: an OMM record does not say which constellation it belongs to.
+
+    A derived dataset reconstructs that membership locally and publishes it at
+    the same public path the fetched GROUP used, so consumers are unaffected.
+    The reconstruction is deliberately approximate — see the per-rule notes in
+    the shipped configuration for the residual differences against CelesTrak's
+    own grouping, which are counted rather than hand-waved.
+    """
+
+    name: str
+    # The dataset whose published records this one filters. Validated against
+    # the configured dataset names at load time: a typo here would otherwise
+    # publish nothing, silently and forever, because no source ever matches.
+    source: str
+    # Matched against OBJECT_NAME. Optional so a rule can select purely on
+    # orbit, which is how `geo` — an orbital regime, not a family of names — is
+    # expressed.
+    pattern: re.Pattern[str] | None
+    minimum_mean_motion: float | None
+    maximum_mean_motion: float | None
+    minimum_records: int
+    maximum_count_drop_fraction: float
+
+
 # Every field is an independently tunable retrieval or politeness bound.
 # pylint: disable=too-many-instance-attributes
 @dataclass(frozen=True, slots=True)
@@ -62,6 +96,7 @@ class GpConfig:
     read_timeout_seconds: float
     maximum_response_bytes: int
     datasets: tuple[GpDatasetConfig, ...]
+    derived: tuple[GpDerivedConfig, ...] = ()
 
 
 # pylint: enable=too-many-instance-attributes
@@ -160,10 +195,14 @@ def _optional_bounded_int(
     return value
 
 
-def _gp_dataset(raw: Any, index: int, names: set[str]) -> GpDatasetConfig:
-    section = f"gp.datasets[{index}]"
-    if not isinstance(raw, dict):
-        raise ConfigError(f"{section} must be a table")
+def _dataset_name(raw: dict[str, Any], section: str, names: set[str]) -> str:
+    """Read a publication name, rejecting one already claimed.
+
+    Fetched and derived datasets share a single public directory and a single
+    state directory, so the two lists share one namespace. A collision would
+    have them overwrite each other's published file on alternating runs.
+    """
+
     name = _non_empty_string(raw, "name", section)
     if not _DATASET_NAME.fullmatch(name):
         raise ConfigError(
@@ -172,9 +211,12 @@ def _gp_dataset(raw: Any, index: int, names: set[str]) -> GpDatasetConfig:
     if name in names:
         raise ConfigError(f"duplicate GP dataset name: {name}")
     names.add(name)
-    query = _non_empty_string(raw, "query", section).upper()
-    if query not in {"GROUP", "SPECIAL"}:
-        raise ConfigError(f"{section}.query must be GROUP or SPECIAL")
+    return name
+
+
+def _record_bounds(raw: dict[str, Any], section: str) -> tuple[int, float]:
+    """Read the two count guards every publishable dataset carries."""
+
     minimum_records = raw.get("minimum_records")
     if (
         not isinstance(minimum_records, int)
@@ -187,6 +229,18 @@ def _gp_dataset(raw: Any, index: int, names: set[str]) -> GpDatasetConfig:
         raise ConfigError(f"{section}.maximum_count_drop_fraction must be a number")
     if not 0 <= maximum_drop <= 1:
         raise ConfigError(f"{section}.maximum_count_drop_fraction must be between 0 and 1")
+    return minimum_records, float(maximum_drop)
+
+
+def _gp_dataset(raw: Any, index: int, names: set[str]) -> GpDatasetConfig:
+    section = f"gp.datasets[{index}]"
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{section} must be a table")
+    name = _dataset_name(raw, section, names)
+    query = _non_empty_string(raw, "query", section).upper()
+    if query not in {"GROUP", "SPECIAL"}:
+        raise ConfigError(f"{section}.query must be GROUP or SPECIAL")
+    minimum_records, maximum_drop = _record_bounds(raw, section)
     # Optional rather than required, like `gp.maximum_daily_bytes` and the
     # `[health]` thresholds: a per-dataset ceiling that refuses to load against a
     # TOML predating it takes the whole updater offline exactly when the ceiling
@@ -204,9 +258,94 @@ def _gp_dataset(raw: Any, index: int, names: set[str]) -> GpDatasetConfig:
         query=query,
         value=_non_empty_string(raw, "value", section),
         minimum_records=minimum_records,
-        maximum_count_drop_fraction=float(maximum_drop),
+        maximum_count_drop_fraction=maximum_drop,
         maximum_bytes=maximum_bytes,
     )
+
+
+def _mean_motion_bound(raw: dict[str, Any], key: str, section: str) -> float | None:
+    """Read one end of an optional mean-motion window, in revolutions per day."""
+
+    if key not in raw:
+        return None
+    value = raw[key]
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise ConfigError(f"{section}.{key} must be a number")
+    # The same window `validate_omm_json` accepts for a record's MEAN_MOTION. A
+    # bound outside it could only ever select nothing or everything.
+    if not 0 < value < 20:
+        raise ConfigError(f"{section}.{key} must be between 0 and 20")
+    return float(value)
+
+
+def _gp_derived(raw: Any, index: int, names: set[str], sources: set[str]) -> GpDerivedConfig:
+    section = f"gp.derived[{index}]"
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{section} must be a table")
+    name = _dataset_name(raw, section, names)
+    source = _non_empty_string(raw, "source", section)
+    # Checked against the fetched datasets rather than accepted on faith. A rule
+    # naming a source that is not fetched can never fire, and its only symptom
+    # would be a public file that quietly stops being rewritten — indistinguish-
+    # able, months later, from a dataset nobody uses.
+    if source not in sources:
+        raise ConfigError(f"{section}.source must name a configured gp.datasets entry: {source}")
+    raw_pattern = raw.get("pattern")
+    pattern: re.Pattern[str] | None = None
+    if raw_pattern is not None:
+        if not isinstance(raw_pattern, str) or not raw_pattern.strip():
+            raise ConfigError(f"{section}.pattern must be a non-empty string")
+        try:
+            pattern = re.compile(raw_pattern)
+        except re.error as exc:
+            raise ConfigError(
+                f"{section}.pattern is not a valid regular expression: {exc}"
+            ) from exc
+    minimum_mean_motion = _mean_motion_bound(raw, "minimum_mean_motion", section)
+    maximum_mean_motion = _mean_motion_bound(raw, "maximum_mean_motion", section)
+    if (
+        minimum_mean_motion is not None
+        and maximum_mean_motion is not None
+        and minimum_mean_motion > maximum_mean_motion
+    ):
+        raise ConfigError(f"{section}.minimum_mean_motion must not exceed maximum_mean_motion")
+    # A rule with no predicate at all would republish its whole source under a
+    # second name. That is never what anyone meant to write, and it would sail
+    # through every count guard below.
+    if pattern is None and minimum_mean_motion is None and maximum_mean_motion is None:
+        raise ConfigError(
+            f"{section} must set pattern, minimum_mean_motion, or maximum_mean_motion"
+        )
+    minimum_records, maximum_drop = _record_bounds(raw, section)
+    return GpDerivedConfig(
+        name=name,
+        source=source,
+        pattern=pattern,
+        minimum_mean_motion=minimum_mean_motion,
+        maximum_mean_motion=maximum_mean_motion,
+        minimum_records=minimum_records,
+        maximum_count_drop_fraction=maximum_drop,
+    )
+
+
+def _load_gp_derived(
+    table: dict[str, Any],
+    datasets: list[GpDatasetConfig],
+    names: set[str],
+) -> tuple[GpDerivedConfig, ...]:
+    """Read the derived-dataset rules, which an older configuration may not have.
+
+    Optional for the same reason as `gp.maximum_daily_bytes` and the `[health]`
+    thresholds: a deployed TOML predating derived datasets is still a valid one.
+    It simply publishes nothing beyond what it fetches, which is exactly what
+    that release did.
+    """
+
+    raw_derived = table.get("derived", [])
+    if not isinstance(raw_derived, list):
+        raise ConfigError("gp.derived must be a list of tables")
+    sources = {dataset.name for dataset in datasets}
+    return tuple(_gp_derived(raw, index, names, sources) for index, raw in enumerate(raw_derived))
 
 
 def _load_gp(document: dict[str, Any]) -> GpConfig:
@@ -257,6 +396,8 @@ def _load_gp(document: dict[str, Any]) -> GpConfig:
     for index, raw in enumerate(raw_datasets):
         datasets.append(_gp_dataset(raw, index, names))
 
+    derived = _load_gp_derived(table, datasets, names)
+
     return GpConfig(
         base_url=base_url,
         user_agent=_non_empty_string(table, "user_agent", "gp"),
@@ -267,6 +408,7 @@ def _load_gp(document: dict[str, Any]) -> GpConfig:
         read_timeout_seconds=_positive_number(table, "read_timeout_seconds", "gp"),
         maximum_response_bytes=maximum_bytes,
         datasets=tuple(datasets),
+        derived=tuple(derived),
     )
 
 
