@@ -391,3 +391,30 @@ def test_evaluate_defaults_to_the_current_clock(tmp_path: Path) -> None:
     )
 
     assert evaluate(config).severity == OK
+
+
+def test_failed_derived_datasets_warn_rather_than_reading_as_healthy(tmp_path: Path) -> None:
+    """A derived rule keeps its last-known-good file, so ages stay green."""
+
+    config = make_config(tmp_path)
+    _healthy(config)
+    _write(
+        config.storage.root / "public" / "v1" / "status" / "gp.json",
+        {
+            "checked_at": NOW.isoformat(),
+            "published": 2,
+            "daily_bytes": 4 * 1024**2,
+            "budget_bytes": 80 * 1024**2,
+            "blocked": False,
+            "budget_exhausted": False,
+            "derived_failed": 2,
+        },
+    )
+
+    check = _by_name(config, "gp-run")
+
+    assert check.severity == WARNING
+    assert "2 derived dataset(s) failed to publish" in check.detail
+    # The retained files are still served correctly, just not refreshed, so this
+    # must not fail the unit.
+    assert evaluate(config, now=NOW).successful

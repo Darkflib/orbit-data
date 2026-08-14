@@ -116,11 +116,16 @@ class DatasetState:
             # the per-dataset handling in `run` — taking down the whole updater,
             # the run summary and every later dataset over one corrupt file.
             # Corruption has to stay isolated to the dataset that owns it.
-            size = state.last_response_bytes
-            if size is not None and (
-                not isinstance(size, int) or isinstance(size, bool) or size < 0
-            ):
-                raise ValueError("last_response_bytes must be a non-negative integer")
+            # `record_count` has exactly the same exposure by way of
+            # `validate_omm_json`, which multiplies it by the drop fraction: a
+            # string there raises `TypeError` from inside the validator, which
+            # is not an `OmmValidationError` either, so it escapes twice over.
+            for count_field in ("last_response_bytes", "record_count"):
+                count = getattr(state, count_field)
+                if count is not None and (
+                    not isinstance(count, int) or isinstance(count, bool) or count < 0
+                ):
+                    raise ValueError(f"{count_field} must be a non-negative integer")
             return state
         except (OSError, TypeError, ValueError, orjson.JSONDecodeError) as exc:
             raise GpUpdateError(f"invalid persistent state for {path.stem}: {exc}") from exc

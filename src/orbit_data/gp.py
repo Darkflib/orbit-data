@@ -282,6 +282,12 @@ class GpUpdater:
                         stop_reason = "forbidden"
                         break
 
+            # Outside the client block: derivation touches only the volume, so
+            # it runs even when the fetch loop stopped early. A run refused by
+            # CelesTrak still leaves a good `active.json` on disk, and a rule
+            # added since the last run has no other chance to catch up.
+            self._sync_derived()
+
             result = GpRunResult(
                 attempted=attempted,
                 published=published,
@@ -466,65 +472,116 @@ class GpUpdater:
                 "sha256": metadata.sha256,
             },
         )
-        # Strictly after the source is on disk. A derived file is a view of what
-        # was published, so publishing one from a payload that then failed to
-        # land would leave the tree self-inconsistent — subsets present, the set
-        # they came from stale.
-        self._derive_from(dataset, payload)
         return "published"
 
-    def _derive_from(self, source: GpDatasetConfig, payload: bytes) -> None:
-        """Publish every dataset derived from this source's records.
+    def _sync_derived(self) -> None:
+        """Bring every derived dataset up to date with its published source.
 
-        A derived failure is contained here rather than raised. The source has
-        already been published successfully and no CelesTrak request is at
-        stake, so aborting the run would punish a healthy fetch for a local
-        filtering fault — and, because `_ordered_datasets` sorts on
-        `last_attempt`, would keep re-punishing the same one. The counters and
-        the stale public file are what surface it.
+        Deliberately a reconciliation against what is on the volume rather than
+        a step hung off a successful fetch. Derivation needs the *records*, not
+        the response that carried them, and the three commonest states of a
+        healthy run supply no response at all: a source inside its request floor
+        is skipped, a routine "not updated" 403 is the steady state under
+        one-download-per-update, and a fresh deployment starts with neither. In
+        every one of those a perfectly good `active.json` is sitting on disk. A
+        derive-on-response path would leave its subsets missing until CelesTrak
+        next happened to update — on a new volume, missing entirely, which
+        `check-health` reports as critical.
+
+        Reading the published file back also collapses the two paths into one:
+        the file is written atomically before its state records the success, so
+        a source published seconds ago in this very run is picked up here by the
+        same code that recovers one published days ago.
+
+        A derived failure never propagates. No CelesTrak request is at stake, so
+        failing the run would punish a healthy fetch for a local filtering fault
+        — and, because `_ordered_datasets` sorts on `last_attempt`, would keep
+        re-punishing the same one. The counters and the retained file surface it.
         """
 
-        rules = [rule for rule in self.config.gp.derived if rule.source == source.name]
-        if not rules:
-            return
-        # Safe to parse unchecked: `validate_omm_json` has already accepted this
-        # exact payload as a JSON array of well-formed records.
-        records = orjson.loads(payload)
-        for rule in rules:
+        for source_name, rules in self._derived_by_source().items():
+            source_success = DatasetState.load(self._state_path(source_name)).last_success
+            if source_success is None:
+                # Nothing has ever been published under this name, so there is
+                # no cached payload to filter. Not a failure: the first
+                # successful fetch brings every rule below it along.
+                continue
+            # Keyed on the source's publication instant rather than a timestamp
+            # of our own, so a derived dataset is exactly as fresh as what it
+            # was filtered from — which makes this both an idempotency check and
+            # an honest answer for the age check in `check-health`.
+            stale = [
+                rule
+                for rule in rules
+                if DatasetState.load(self._state_path(rule.name)).last_success != source_success
+            ]
+            if not stale:
+                continue
             try:
-                self._publish_derived(rule, records)
+                records = self._published_records(source_name)
             except GpUpdateError as exc:
-                self._derived_failed += 1
-                LOGGER.error(
-                    "derived GP dataset failed",
-                    extra={"dataset": rule.name, "source": source.name, "error": str(exc)},
-                )
-            else:
-                self._derived_published += 1
+                for rule in stale:
+                    self._fail_derived(rule, "source-unreadable", str(exc))
+                continue
+            for rule in stale:
+                try:
+                    self._publish_derived(rule, records, source_success)
+                except OmmValidationError as exc:
+                    self._fail_derived(rule, "validation-error", str(exc))
+                else:
+                    self._derived_published += 1
 
-    def _publish_derived(self, rule: GpDerivedConfig, records: list[Any]) -> None:
+    def _derived_by_source(self) -> dict[str, list[GpDerivedConfig]]:
+        """Group the rules so one source is read and parsed at most once."""
+
+        grouped: dict[str, list[GpDerivedConfig]] = {}
+        for rule in self.config.gp.derived:
+            grouped.setdefault(rule.source, []).append(rule)
+        return grouped
+
+    def _published_records(self, source_name: str) -> list[Any]:
+        """Re-read a source this service already published and validated."""
+
+        path = self.config.storage.root / "public" / "v1" / "gp" / f"{source_name}.json"
+        try:
+            records = orjson.loads(path.read_bytes())
+        except (OSError, orjson.JSONDecodeError) as exc:
+            raise GpUpdateError(f"cannot read published source {source_name}: {exc}") from exc
+        if not isinstance(records, list):
+            raise GpUpdateError(f"published source {source_name} is not a JSON array")
+        return records
+
+    def _fail_derived(self, rule: GpDerivedConfig, result: str, error: str) -> None:
+        """Record a derived failure without disturbing its last-known-good file."""
+
+        state = DatasetState.load(self._state_path(rule.name))
+        state.last_result = result
+        state.error = error
+        self._save_derived_state(rule, state)
+        self._derived_failed += 1
+        LOGGER.error(
+            "derived GP dataset failed",
+            extra={"dataset": rule.name, "source": rule.source, "error": error},
+        )
+
+    def _publish_derived(
+        self, rule: GpDerivedConfig, records: list[Any], source_success: str
+    ) -> None:
         """Filter, validate and publish one derived dataset."""
 
         state = DatasetState.load(self._state_path(rule.name))
         selected = [record for record in records if self._selects(rule, record)]
         payload = orjson.dumps(selected)
-        try:
-            metadata = validate_omm_json(payload, rule, previous_record_count=state.record_count)
-        except OmmValidationError as exc:
-            # The same guard a fetched dataset gets, and it earns its place here
-            # for a different reason: upstream renaming a family of objects
-            # would silently empty a layer, and the count floor is the only
-            # thing that notices before a user does.
-            state.last_result = "validation-error"
-            state.error = str(exc)
-            self._save_derived_state(rule, state)
-            raise GpUpdateError(str(exc)) from exc
+        # The same guard a fetched dataset gets, and it earns its place here for
+        # a different reason: upstream renaming a family of objects would
+        # silently empty a layer, and the count floor is the only thing that
+        # notices before a user does.
+        metadata = validate_omm_json(payload, rule, previous_record_count=state.record_count)
 
-        now = self._now().isoformat()
         atomic_write_bytes(
             self.config.storage.root / "public" / "v1" / "gp" / f"{rule.name}.json", payload
         )
-        state.last_attempt = state.last_success = now
+        state.last_attempt = state.last_success = source_success
         state.last_result = "published"
         state.error = None
         state.record_count = metadata.record_count

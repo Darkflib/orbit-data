@@ -177,6 +177,19 @@ def _check_gp_run(config: AppConfig, now: datetime) -> Check:
         # read as healthy — datasets are being skipped, and the only other
         # symptom is staleness that appears many hours later.
         return Check("gp-run", WARNING, f"daily byte budget spent; {detail}")
+    derived_failed = _as_int(document.get("derived_failed"))
+    if derived_failed:
+        # A derived rule that stops matching keeps its last-known-good file and
+        # its previous `last_success`, so the per-dataset age checks read
+        # healthy for hours. This is the only prompt signal that our own
+        # filtering, rather than CelesTrak, is what broke — and it is a warning
+        # rather than a critical because that retained file is still being
+        # served correctly, just not refreshed.
+        return Check(
+            "gp-run",
+            WARNING,
+            f"{derived_failed} derived dataset(s) failed to publish; {detail}",
+        )
     age = _age_seconds(document.get("checked_at"), now)
     if age is None:
         # A summary written by a release predating `checked_at`. The per-dataset

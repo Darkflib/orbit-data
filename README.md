@@ -127,7 +127,7 @@ window rolls.
 
 `[[gp.datasets]]` also takes an optional `maximum_bytes`, a ceiling for that one
 query so a single oversized GROUP cannot spend the shared allowance on its own.
-`active` is capped at 10 MiB against a current size of about 7.0 MB. The key is
+`active` is capped at 10 MiB against a current size of about 6.9 MB. The key is
 optional and absent means "only the shared allowance applies", so a deployed
 configuration predating it still loads. Breaching a per-dataset cap fails that
 dataset only; it neither stops the run nor reports the shared budget as spent.
@@ -167,9 +167,23 @@ Each derived dataset publishes to `/v1/gp/<name>.json` exactly where the fetched
 GROUP did, so consumers see no difference. It is validated with the same record
 and count guards as a fetched response, so a rule that stops matching — upstream
 renaming a family of objects — fails loudly instead of silently emptying a
-layer. Derivation runs only after its source has been published successfully,
-and a derived failure never fails the source: no CelesTrak request is at stake,
-so the run continues and `derived_failed` in the run summary reports it.
+layer. A derived failure never fails its source: no CelesTrak request is at
+stake, so the run continues, the last-known-good file is retained, and
+`derived_failed` in the run summary drives a `check-health` warning — the
+per-dataset age checks cannot catch it, because a retained file keeps its
+previous `last_success`.
+
+Derivation is a reconciliation against the volume rather than a step hung off a
+successful fetch, and that distinction matters more than it looks. The three
+commonest states of a healthy run supply no response to filter: a source inside
+its request floor is skipped, a routine "not updated" `403` is the steady state
+under one-download-per-update, and a fresh deployment starts with neither. In
+all three a perfectly good `active.json` is already on disk. Each run therefore
+re-reads the published source and rebuilds any derived dataset whose recorded
+source publication differs from the source's current one. A newly added
+`[[gp.derived]]` rule is filled in on the next run rather than waiting for
+CelesTrak to update, and a derived dataset's `last_success` is its source's, so
+its age is honest and the check is idempotent.
 
 The reconstruction is deliberately approximate, and the shipped configuration
 documents the measured difference against CelesTrak's own grouping for each
