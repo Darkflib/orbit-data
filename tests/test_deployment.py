@@ -122,10 +122,15 @@ def test_alert_service_passes_the_slack_credential_only_on_standard_input() -> N
     command = unit["Service"]["ExecStart"]
 
     assert unit["Unit"]["ConditionPathExists"] == "/etc/orbit-data/credentials/slack-webhook-url"
+    assert unit["Unit"]["After"] == "network-online.target orbit-egress-network.service"
+    assert unit["Unit"]["Wants"] == "network-online.target orbit-egress-network.service"
     assert unit["Service"]["LoadCredential"] == (
         "slack-webhook-url:/etc/orbit-data/credentials/slack-webhook-url"
     )
     assert "--webhook-stdin" in command
+    assert "--network=systemd-orbit-egress" in command
+    assert '--unit "%i"' in command
+    assert "%I" not in command
     assert "CREDENTIALS_DIRECTORY" in command
     assert "--pull=never" in command
     assert ":/run/credentials" not in command
