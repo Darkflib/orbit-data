@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
+import orjson
 
 from orbit_data.config import AppConfig, GpDatasetConfig
 from orbit_data.derive import GpDeriver
@@ -27,6 +28,7 @@ from orbit_data.gp_state import (
 )
 from orbit_data.locking import job_lock
 from orbit_data.omm import OmmMetadata, OmmValidationError, validate_omm_json
+from orbit_data.omm_csv import parse_omm_csv
 from orbit_data.publishing import atomic_write_bytes, atomic_write_json, ensure_storage
 
 LOGGER = logging.getLogger("orbit_data.gp")
@@ -181,7 +183,12 @@ class GpUpdater:
                 transport=self.transport,
                 follow_redirects=False,
                 headers={
-                    "Accept": "application/json",
+                    # gp.php picks its rendering from `FORMAT=` in the query
+                    # string rather than from this header — see `_url` for why
+                    # that is now CSV — but a request whose Accept contradicts
+                    # its own query is a lie told to a service that is already
+                    # rationing us. The two say the same thing.
+                    "Accept": "text/csv",
                     "User-Agent": self.config.gp.user_agent,
                 },
             ) as client:
@@ -430,6 +437,12 @@ class GpUpdater:
             # exactly the mid-stream cut-off it exists to prevent. Recorded
             # before validation because an unparseable body still crossed the
             # wire at full size.
+            #
+            # `payload` is the CSV CelesTrak served, not the JSON published from
+            # it, and the CSV is the figure the forecast wants: `_preflight` and
+            # the ledger ration CelesTrak's bandwidth, not our disk. The
+            # published document is roughly three times this size and no byte of
+            # it crosses their wire.
             state.last_response_bytes = len(payload)
         return self._handle_response(dataset, state, status, payload)
 
@@ -451,9 +464,18 @@ class GpUpdater:
             self._record_failure(dataset, state, "http-error", self._describe(status, payload))
             raise StopGpRunError(f"unexpected CelesTrak response HTTP {status}")
 
+        # Converted here, then validated over the serialized JSON rather than
+        # over the record list, and published as those exact bytes.
+        # `OmmMetadata.sha256` is the hash of whatever payload it was handed, and
+        # every consumer reads it as the hash of the file served at
+        # `/v1/gp/<name>.json`; hashing the CSV instead would keep the field's
+        # name and quietly change what it means. Both steps raise the same
+        # `OmmValidationError`, so a body damaged in transit reaches exactly the
+        # handling an unparseable JSON body used to.
         try:
+            document = orjson.dumps(parse_omm_csv(payload))
             metadata = validate_omm_json(
-                payload,
+                document,
                 dataset,
                 previous_record_count=state.record_count,
             )
@@ -461,7 +483,7 @@ class GpUpdater:
             self._record_failure(dataset, state, "validation-error", str(exc))
             raise StopGpRunError(str(exc)) from exc
 
-        self._publish(dataset, payload, metadata, state)
+        self._publish(dataset, document, metadata, state)
         LOGGER.info(
             "published GP dataset",
             extra={
@@ -615,13 +637,14 @@ class GpUpdater:
         The ledger is updated in `finally`, not on the way out of the success
         path. An oversized body or a mid-stream read error has already cost
         CelesTrak everything it sent, and a backstop that under-counts precisely
-        in the heaviest cases is not a backstop: two aborted 64 MiB responses
-        would exceed the daily threshold while `daily_bytes` still read zero.
+        in the heaviest cases is not a backstop: four aborted responses at the
+        configured ceiling would exceed the daily threshold while `daily_bytes`
+        still read zero.
 
         The bound is whichever ceiling is lowest, carried with its name because
         the three mean different things when hit. Checking the budget only
         between datasets leaves it overshootable by one whole response, which at
-        the configured 64 MiB response limit is most of a day's allowance.
+        the configured 24 MiB response limit is a quarter of a day's allowance.
         """
 
         limit = bound.limit
@@ -684,12 +707,16 @@ class GpUpdater:
     def _publish(
         self,
         dataset: GpDatasetConfig,
-        payload: bytes,
+        document: bytes,
         metadata: OmmMetadata,
         state: DatasetState,
     ) -> None:
+        # The JSON built from the response, not the response. Named apart from
+        # `payload` everywhere else in this class because the two are no longer
+        # the same bytes, and confusing them is how `sha256` would stop meaning
+        # "the hash of the file we published".
         target = self.config.storage.root / "public" / "v1" / "gp" / f"{dataset.name}.json"
-        atomic_write_bytes(target, payload)
+        atomic_write_bytes(target, document)
         state.last_success = state.last_attempt
         state.last_result = "published"
         state.error = None
@@ -758,8 +785,16 @@ class GpUpdater:
         return self.config.storage.root / "state" / "gp-bandwidth.json"
 
     def _url(self, dataset: GpDatasetConfig) -> str:
+        # CSV, not JSON. CelesTrak firewalled this service's address for pulling
+        # more than 100 MB/day from gp.php, and Dr Kelso's mail named the cause:
+        # the JSON rendering of a GP record is about three times the size of the
+        # same record as CSV. With the query list already cut from thirteen to
+        # three and no compression on offer, the format was the last lever left
+        # on the wire. Nothing downstream moves with it — `_handle_response`
+        # converts the body back to the OMM JSON that `/v1/gp/<name>.json` has
+        # always carried.
         separator = "&" if "?" in self.config.gp.base_url else "?"
-        query = urlencode({dataset.query: dataset.value, "FORMAT": "JSON"})
+        query = urlencode({dataset.query: dataset.value, "FORMAT": "CSV"})
         return f"{self.config.gp.base_url}{separator}{query}"
 
     # Keyed on the name rather than the dataset because fetched and derived

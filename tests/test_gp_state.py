@@ -10,7 +10,7 @@ import httpx
 import orjson
 
 from orbit_data.gp import GpUpdater
-from tests.support import make_config, omm_payload
+from tests.support import make_config, omm_csv_payload
 from tests.test_gp import THREE_DATASETS
 
 NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
@@ -36,7 +36,7 @@ def test_corrupt_record_count_stays_isolated_to_one_dataset(tmp_path: Path) -> N
 
     result = GpUpdater(
         config,
-        transport=_transport(lambda _request: httpx.Response(200, content=omm_payload())),
+        transport=_transport(lambda _request: httpx.Response(200, content=omm_csv_payload())),
         clock=lambda: NOW,
     ).run()
 

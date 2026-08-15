@@ -10,7 +10,7 @@ import httpx
 import orjson
 
 from orbit_data.gp import GpRunResult, GpUpdater
-from tests.support import make_config, omm_record
+from tests.support import make_config, omm_csv, omm_record
 
 NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
 
@@ -61,9 +61,14 @@ maximum_count_drop_fraction = 0.5
 
 
 def _mixed_payload() -> bytes:
-    """Two LEO Starlink craft, a geosynchronous Starlink, a GEO comsat, and debris."""
+    """Two LEO Starlink craft, a geosynchronous Starlink, a GEO comsat, and debris.
 
-    return orjson.dumps(
+    CSV, because that is what CelesTrak now serves. Derivation itself never sees
+    it: the fetch converts the body to OMM JSON, publishes that, and every rule
+    below filters the published file.
+    """
+
+    return omm_csv(
         [
             omm_record(1, OBJECT_NAME="STARLINK-1008"),
             omm_record(2, OBJECT_NAME="STARLINK-1012"),
@@ -121,16 +126,31 @@ def test_combined_predicates_select_the_intersection(tmp_path: Path) -> None:
 
 
 def test_a_name_that_is_not_a_string_is_excluded(tmp_path: Path) -> None:
-    # `validate_omm_json` requires OBJECT_NAME to be present but does not
-    # constrain its type, so a non-string name reaches derivation intact.
-    payload = orjson.dumps(
-        [
-            omm_record(1, OBJECT_NAME="STARLINK-9001", MEAN_MOTION=1.0),
-            omm_record(2, OBJECT_NAME=42, MEAN_MOTION=1.0),
-        ]
+    """Reachable from the volume rather than from a response, since the CSV switch.
+
+    `validate_omm_json` requires OBJECT_NAME to be present but does not constrain
+    its type, so a non-string name survives validation. It can no longer arrive
+    from CelesTrak — every cell of a CSV body is text, and the parser types only
+    the numeric columns — but the published file is read back on later runs, and
+    it can have been written by a release that fetched JSON.
+    """
+
+    _, root = _run(tmp_path, _mixed_payload(), datasets=_SOURCE_ONLY)
+    (root / "public/v1/gp/active.json").write_bytes(
+        orjson.dumps(
+            [
+                omm_record(1, OBJECT_NAME="STARLINK-9001", MEAN_MOTION=1.0),
+                omm_record(2, OBJECT_NAME=42, MEAN_MOTION=1.0),
+            ]
+        )
     )
 
-    _, root = _run(tmp_path, payload)
+    config = make_config(tmp_path, datasets=_DERIVED_DATASETS)
+    GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(500)),
+        clock=lambda: NOW + timedelta(hours=1),
+    ).run()
 
     # Excluded from the pattern rules rather than admitted: publishing a record
     # the rule could not classify is worse than being short by it. The
@@ -208,7 +228,7 @@ def test_derived_freshness_is_its_sources_freshness(tmp_path: Path) -> None:
 def test_derived_failure_does_not_fail_the_source(tmp_path: Path) -> None:
     # Nothing matches `^STARLINK`, so both Starlink rules breach their minimum
     # while the geosynchronous rule still matches.
-    payload = orjson.dumps(
+    payload = omm_csv(
         [
             omm_record(3, OBJECT_NAME="INTELSAT 901", MEAN_MOTION=1.0027),
             omm_record(4, OBJECT_NAME="COSMOS 2251 DEB"),
@@ -338,7 +358,7 @@ maximum_count_drop_fraction = 0.4
 
 
 def test_derived_record_count_drop_is_rejected(tmp_path: Path) -> None:
-    payload = orjson.dumps(
+    payload = omm_csv(
         [
             omm_record(1, OBJECT_NAME="STARLINK-1008"),
             omm_record(2, OBJECT_NAME="STARLINK-1012"),
@@ -352,7 +372,7 @@ def test_derived_record_count_drop_is_rejected(tmp_path: Path) -> None:
     # One of the two Starlink craft is renamed out of the constellation. The
     # source keeps all three records, so only the derived subset drops — 50%,
     # past its configured 0.4 fraction — and the last-known-good file is kept.
-    payload = orjson.dumps(
+    payload = omm_csv(
         [
             omm_record(1, OBJECT_NAME="STARLINK-1008"),
             omm_record(2, OBJECT_NAME="UNRELATED PAYLOAD"),
