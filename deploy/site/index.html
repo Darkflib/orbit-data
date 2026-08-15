@@ -42,25 +42,27 @@
             <h1 id="page-title">The data layer<br />behind Orbit.</h1>
             <p>
               Fresh orbital elements, catalogue enrichment and sky data—published as
-              resilient static files for the open web.
+              resilient static files so Orbit users do not need to query CelesTrak
+              directly.
             </p>
             <div class="actions">
-              <a class="button button-primary" href="/v1/data/manifest.json">
+              <a
+                class="button button-primary"
+                href="https://darkflib.github.io/orbit"
+                rel="noreferrer"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M14 4h6v6M20 4l-9 9" />
+                  <path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" />
+                </svg>
+                Open Orbit
+              </a>
+              <a class="button button-secondary" href="/v1/data/manifest.json">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M3 7h6l2 2h10v10H3z" />
                   <path d="M3 7V5h7l2 2h7" />
                 </svg>
                 Browse the manifest
-              </a>
-              <a
-                class="button button-secondary"
-                href="https://github.com/Darkflib/orbit-data"
-                rel="noreferrer"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m8 6-5 6 5 6M16 6l5 6-5 6M14 3l-4 18" />
-                </svg>
-                View source
               </a>
             </div>
           </div>
@@ -71,6 +73,26 @@
             <span class="orbit orbit-three"><i></i><b></b></span>
             <span class="orbit orbit-four"><i></i></span>
             <span class="orbit-core"></span>
+          </div>
+        </section>
+
+        <section class="service-note" aria-labelledby="service-note-title">
+          <div>
+            <p class="eyebrow">Why Orbit Data</p>
+            <h2 id="service-note-title">A shared cache, with fair use in mind.</h2>
+          </div>
+          <div class="service-note-copy">
+            <p>
+              CelesTrak's <a href="https://celestrak.org/usage-policy.php" rel="noreferrer">usage policy</a>
+              sets fair-use limits for automated downloads. Orbit Data refreshes upstream data
+              conservatively and makes the cached results available to Orbit, rather than asking
+              every Orbit user to download them from CelesTrak.
+            </p>
+            <p>
+              This service is intended to remain online for the foreseeable future. Visit
+              <a href="https://darkflib.github.io/orbit" rel="noreferrer">Orbit</a> or browse the
+              <a href="https://github.com/Darkflib/orbit" rel="noreferrer">Orbit source code</a>.
+            </p>
           </div>
         </section>
 

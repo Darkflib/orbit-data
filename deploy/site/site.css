@@ -297,6 +297,57 @@ h1 {
   box-shadow: 0 0 24px rgb(56 189 248 / 20%);
 }
 
+.service-note {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.75fr) minmax(0, 1.25fr);
+  gap: 64px;
+  padding: 38px 10px 41px;
+  border-top: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border);
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.service-note h2 {
+  max-width: 380px;
+  margin: 0;
+  font-size: clamp(1.55rem, 2.2vw, 2.15rem);
+  letter-spacing: -0.035em;
+  line-height: 1.13;
+}
+
+.service-note-copy {
+  max-width: 740px;
+  color: var(--muted);
+  font-size: 1.07rem;
+  line-height: 1.6;
+}
+
+.service-note-copy p {
+  margin: 0;
+}
+
+.service-note-copy p + p {
+  margin-top: 16px;
+}
+
+.service-note-copy a {
+  color: var(--accent);
+  text-underline-offset: 0.18em;
+}
+
+.service-note-copy a:hover {
+  color: var(--text);
+}
+
 .directory {
   border-top: 1px solid var(--border-strong);
 }
@@ -402,6 +453,11 @@ a:focus-visible {
     grid-template-columns: 42px 1fr 30px;
   }
 
+  .service-note {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+
   .directory code {
     display: none;
   }
@@ -461,6 +517,14 @@ a:focus-visible {
 
   .orbit-core {
     display: none;
+  }
+
+  .service-note {
+    padding: 32px 4px 35px;
+  }
+
+  .service-note-copy {
+    font-size: 1rem;
   }
 
   .directory-row {
