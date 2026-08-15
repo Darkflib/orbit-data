@@ -1,8 +1,7 @@
 [Unit]
 Description=Check Orbit data freshness and free space
-# Wire alerting here: any unit you drop in receives the failure. Only a
-# critical check fails this service; warnings stay in the journal.
-# OnFailure=orbit-data-alert@%n.service
+# Only a critical check fails this service; warnings stay in the journal.
+OnFailure=orbit-data-alert@%n.service
 
 [Container]
 Image=ghcr.io/darkflib/orbit-data:latest

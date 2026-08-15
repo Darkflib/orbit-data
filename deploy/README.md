@@ -214,16 +214,26 @@ cap — the shared allowance is not the problem there, and the run is not marked
 `budget_exhausted` for it. Both are visible immediately in
 `journalctl -u orbit-data-gp.service -p warning`.
 
-Warnings are logged and exit zero. Only a critical fails the unit, so alerting
-is an `OnFailure=` drop-in on `orbit-data-check.service`. **Nothing is wired up
-by default** — until you add one, every check above lands in the journal and
-nowhere else:
+Warnings are logged and exit zero. A critical failure in the GP, catalogue, or
+health-check unit starts `orbit-data-alert@.service`. Configure its Slack
+incoming webhook to receive those alerts:
 
 ```bash
-systemctl edit orbit-data-check.service   # [Unit] OnFailure=your-notifier.service
-journalctl -u orbit-data-check.service -p warning --since today
-systemctl start orbit-data-check.service  # run one pass now
+sudo install -d -m 0700 /etc/orbit-data/credentials
+sudoedit /etc/orbit-data/credentials/slack-webhook-url
+sudo chmod 0600 /etc/orbit-data/credentials/slack-webhook-url
+sudo deploy/install.sh
 ```
+
+The credential file contains only the Slack webhook URL, with no trailing
+comment or other text. It is supplied to the alert container on standard input,
+not as an environment variable or a Podman mount, so it is absent from command
+lines and container inspection output. The alert includes the failing unit,
+host, severity, event, and a `journalctl` command for investigation. It does
+not retry delivery automatically: retrying an ambiguous Slack request can send
+duplicate pages, while a failed `orbit-data-alert@…` unit remains visible to
+the operator. If the credential is absent, the alert unit is skipped and the
+original failure remains in its journal.
 
 Thresholds live in the optional `[health]` table of `/etc/orbit-data.toml`
 (18h/36h for GP, 36h/72h for the catalogue, 2 GiB/512 MiB free). The GP

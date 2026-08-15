@@ -63,6 +63,7 @@ install -m 0644 "$script_dir/site/"* "$site_dir/"
 install -m 0644 "$script_dir/quadlet/"*.network "$quadlet_dir/"
 install -m 0644 "$script_dir/quadlet/"*.container "$quadlet_dir/"
 install -m 0644 "$script_dir/systemd/"*.timer "$systemd_dir/"
+install -m 0644 "$script_dir/systemd/"*.service "$systemd_dir/"
 
 if [ -n "$install_root" ]; then
     echo "Orbit Data deployment files staged below $install_root"
