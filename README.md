@@ -6,6 +6,19 @@ Podman Quadlets on a Linux host, with scheduled one-shot updater
 containers writing to a persistent volume and a separate static web server
 mounting the published tree read-only.
 
+## Why this exists
+
+[Orbit](https://darkflib.github.io/orbit) should not require every user to
+query CelesTrak directly. `orbit-data` is a shared, responsibly refreshed data
+layer: it retrieves the upstream data within CelesTrak's
+[usage policy](https://celestrak.org/usage-policy.php) and GP update guidance,
+then keeps a static, cached copy available for Orbit clients.
+
+I intend to keep the public service online for the foreseeable future, so
+Orbit users can rely on it instead of adding their own load to CelesTrak. The
+[Orbit source code](https://github.com/Darkflib/orbit) and this repository are
+both open source.
+
 The repository is being implemented in stages. It currently provides:
 
 - a Python 3.13 package managed with `uv`;
