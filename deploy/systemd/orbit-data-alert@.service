@@ -1,0 +1,21 @@
+[Unit]
+Description=Send Orbit Data failure alert for %I
+# `orbit-egress.network` creates `systemd-orbit-egress` and is represented by
+# this generated service. The native alert unit cannot use Quadlet's
+# `orbit-egress.network` reference syntax, so it depends on the generated unit
+# and uses its documented Podman network name directly.
+After=network-online.target orbit-egress-network.service
+Wants=network-online.target orbit-egress-network.service
+# A missing credential means Slack has not been configured. Leave the failure
+# visible in the originating unit's journal without turning alert setup into a
+# second failure loop.
+ConditionPathExists=/etc/orbit-data/credentials/slack-webhook-url
+
+[Service]
+Type=oneshot
+# The credential is passed on stdin, never as an environment variable, command
+# argument, or container mount. That keeps the webhook out of `podman inspect`
+# and lets the alert container stay unprivileged.
+LoadCredential=slack-webhook-url:/etc/orbit-data/credentials/slack-webhook-url
+ExecStart=/bin/sh -ec 'exec /usr/bin/podman run --pull=never --rm --interactive --read-only --cap-drop=all --security-opt=no-new-privileges --pids-limit=64 --network=systemd-orbit-egress --user=10001:10001 ghcr.io/darkflib/orbit-data:latest alert-slack --unit "%i" --host "%H" --webhook-stdin < "$CREDENTIALS_DIRECTORY/slack-webhook-url"'
+TimeoutStartSec=30s

@@ -31,6 +31,7 @@ def test_updaters_share_writable_failover_volume_and_are_oneshot() -> None:
         assert unit["Container"]["ReadOnly"] == "true"
         assert unit["Container"]["NoNewPrivileges"] == "true"
         assert unit["Container"]["DropCapability"] == "all"
+        assert unit["Unit"]["OnFailure"] == "orbit-data-alert@%n.service"
         assert unit["Service"]["Type"] == "oneshot"
         assert unit["Service"]["MemoryMax"].endswith("M")
         assert "RemainAfterExit" not in unit["Service"]
@@ -69,6 +70,7 @@ def test_health_check_cannot_write_or_depend_on_the_registry() -> None:
     assert unit["Container"]["LogDriver"] == "none"
     assert unit["Container"]["DropCapability"] == "all"
     assert unit["Service"]["Type"] == "oneshot"
+    assert unit["Unit"]["OnFailure"] == "orbit-data-alert@%n.service"
     # No network is needed to read local status documents.
     assert "Wants" not in unit["Unit"]
 
@@ -113,6 +115,25 @@ def test_native_timers_are_not_installed_as_quadlet_sources() -> None:
         "orbit-data-catalog.timer",
         "orbit-data-check.timer",
     }
+
+
+def test_alert_service_passes_the_slack_credential_only_on_standard_input() -> None:
+    unit = _unit("orbit-data-alert@.service", directory=SYSTEMD_UNITS)
+    command = unit["Service"]["ExecStart"]
+
+    assert unit["Unit"]["ConditionPathExists"] == "/etc/orbit-data/credentials/slack-webhook-url"
+    assert unit["Unit"]["After"] == "network-online.target orbit-egress-network.service"
+    assert unit["Unit"]["Wants"] == "network-online.target orbit-egress-network.service"
+    assert unit["Service"]["LoadCredential"] == (
+        "slack-webhook-url:/etc/orbit-data/credentials/slack-webhook-url"
+    )
+    assert "--webhook-stdin" in command
+    assert "--network=systemd-orbit-egress" in command
+    assert '--unit "%i"' in command
+    assert "%I" not in command
+    assert "CREDENTIALS_DIRECTORY" in command
+    assert "--pull=never" in command
+    assert ":/run/credentials" not in command
 
 
 def test_web_mount_preserves_release_symlink_targets() -> None:
@@ -174,6 +195,9 @@ def test_installer_stages_files_and_removes_obsolete_quadlet_timers(
         "orbit-data-gp.timer",
         "orbit-data-catalog.timer",
         "orbit-data-check.timer",
+    }
+    assert {path.name for path in installed_timers.glob("*.service")} == {
+        "orbit-data-alert@.service"
     }
     assert (install_root / "etc" / "orbit-data" / "Caddyfile").read_text(encoding="utf-8") == (
         ROOT / "deploy" / "Caddyfile"

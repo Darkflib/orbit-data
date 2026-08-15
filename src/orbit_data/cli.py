@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from orbit_data import __version__
+from orbit_data.alerts import Alert, cli_send_slack_alert
 from orbit_data.catalog import CatalogUpdater
 from orbit_data.config import ConfigError, load_config
 from orbit_data.gp import GpUpdater
@@ -30,6 +32,15 @@ def _parser() -> argparse.ArgumentParser:
     subcommands.add_parser("sync-gp", help="refresh due CelesTrak GP datasets")
     subcommands.add_parser("sync-catalog", help="refresh enrichment and sky artifacts")
     subcommands.add_parser("check-health", help="report published-data freshness and free space")
+    alert = subcommands.add_parser("alert-slack", help="send one systemd failure alert to Slack")
+    alert.add_argument("--source", default="orbit-data")
+    alert.add_argument("--event", default="unit-failed")
+    alert.add_argument("--severity", default="critical", choices=("warning", "critical"))
+    alert.add_argument("--unit", required=True)
+    alert.add_argument("--host", required=True)
+    credential = alert.add_mutually_exclusive_group(required=True)
+    credential.add_argument("--webhook-file", type=Path)
+    credential.add_argument("--webhook-stdin", action="store_true")
     return parser
 
 
@@ -40,6 +51,18 @@ def run(  # pylint: disable=too-many-return-statements
 
     args = _parser().parse_args(argv)
     configure_logging(verbose=args.verbose)
+    if args.command == "alert-slack":
+        return cli_send_slack_alert(
+            Alert(
+                source=args.source,
+                event=args.event,
+                severity=args.severity,
+                unit=args.unit,
+                host=args.host,
+                occurred_at=datetime.now(tz=UTC),
+            ),
+            webhook_file=args.webhook_file,
+        )
     try:
         config = load_config(args.config)
     except ConfigError as exc:
