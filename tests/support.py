@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import csv
+import io
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +82,31 @@ def make_config(tmp_path: Path, **kwargs: Any) -> AppConfig:
     return load_config(path)
 
 
+# gp.php's own column order, which is also the field order of the JSON it
+# renders from the same records. Keeping the fixture in this order is what lets
+# a test assert that a CSV response publishes the very bytes the equivalent JSON
+# response used to.
+CSV_COLUMNS = (
+    "OBJECT_NAME",
+    "OBJECT_ID",
+    "EPOCH",
+    "MEAN_MOTION",
+    "ECCENTRICITY",
+    "INCLINATION",
+    "RA_OF_ASC_NODE",
+    "ARG_OF_PERICENTER",
+    "MEAN_ANOMALY",
+    "EPHEMERIS_TYPE",
+    "CLASSIFICATION_TYPE",
+    "NORAD_CAT_ID",
+    "ELEMENT_SET_NO",
+    "REV_AT_EPOCH",
+    "BSTAR",
+    "MEAN_MOTION_DOT",
+    "MEAN_MOTION_DDOT",
+)
+
+
 def omm_record(identifier: int = 25544, **overrides: Any) -> dict[str, Any]:
     """Return a complete, valid OMM record."""
 
@@ -92,19 +120,53 @@ def omm_record(identifier: int = 25544, **overrides: Any) -> dict[str, Any]:
         "RA_OF_ASC_NODE": 120.0,
         "ARG_OF_PERICENTER": 90.0,
         "MEAN_ANOMALY": 270.0,
-        "BSTAR": 0.00001,
-        "MEAN_MOTION_DOT": 0.0001,
-        "MEAN_MOTION_DDOT": 0.0,
         "EPHEMERIS_TYPE": 0,
         "CLASSIFICATION_TYPE": "U",
         "NORAD_CAT_ID": identifier,
         "ELEMENT_SET_NO": 999,
+        "REV_AT_EPOCH": 12345,
+        "BSTAR": 0.00001,
+        "MEAN_MOTION_DOT": 0.0001,
+        "MEAN_MOTION_DDOT": 0.0,
     }
     record.update(overrides)
     return record
 
 
 def omm_payload(count: int = 1) -> bytes:
-    """Serialize ``count`` unique valid records."""
+    """Serialize ``count`` unique valid records as gp.php's JSON format."""
 
-    return orjson.dumps([omm_record(25_544 + index) for index in range(count)])
+    return orjson.dumps(omm_records(count))
+
+
+def omm_records(count: int = 1) -> list[dict[str, Any]]:
+    """Return ``count`` unique valid records."""
+
+    return [omm_record(25_544 + index) for index in range(count)]
+
+
+def omm_csv(records: Sequence[dict[str, Any]], *, columns: Sequence[str] = CSV_COLUMNS) -> bytes:
+    """Render records the way gp.php's CSV format serves them.
+
+    Values are written with `repr`, which for the floats in these fixtures is
+    also what orjson emits, so a fixture round-tripped through the parser is
+    byte-identical to the same fixture serialized straight to JSON. That
+    equality is the whole point of the format switch and is asserted directly.
+    """
+
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(columns)
+    for record in records:
+        writer.writerow([_csv_cell(record[column]) for column in columns])
+    return buffer.getvalue().encode("utf-8")
+
+
+def omm_csv_payload(count: int = 1) -> bytes:
+    """The CSV body CelesTrak would serve for ``count`` unique valid records."""
+
+    return omm_csv(omm_records(count))
+
+
+def _csv_cell(value: Any) -> str:
+    return value if isinstance(value, str) else repr(value)

@@ -10,7 +10,7 @@ import httpx
 import orjson
 
 from orbit_data.gp import GpUpdater
-from tests.support import make_config, omm_payload
+from tests.support import make_config, omm_csv_payload, omm_payload
 
 NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
 
@@ -21,7 +21,7 @@ def _transport(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.Mock
 
 def test_valid_response_is_published_with_status(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    payload = omm_payload(2)
+    payload = omm_csv_payload(2)
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -34,9 +34,12 @@ def test_valid_response_is_published_with_status(tmp_path: Path) -> None:
     assert result.attempted == 1
     assert result.published == 1
     assert requests[0].url.params["GROUP"] == "active"
-    assert requests[0].url.params["FORMAT"] == "JSON"
+    assert requests[0].url.params["FORMAT"] == "CSV"
+    assert requests[0].headers["accept"] == "text/csv"
     assert requests[0].headers["user-agent"] == "orbit-data-test/1"
-    assert (config.storage.root / "public/v1/gp/active.json").read_bytes() == payload
+    # CSV crossed the wire; JSON reached the volume. The published file is the
+    # document consumers already parse, unchanged by the switch.
+    assert (config.storage.root / "public/v1/gp/active.json").read_bytes() == omm_payload(2)
     status = orjson.loads((config.storage.root / "public/v1/status/gp/active.json").read_bytes())
     assert status["last_result"] == "published"
     assert status["record_count"] == 2
@@ -51,7 +54,7 @@ def test_dataset_inside_minimum_interval_is_not_requested(tmp_path: Path) -> Non
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, content=omm_payload())
+        return httpx.Response(200, content=omm_csv_payload())
 
     updater = GpUpdater(config, transport=_transport(handler), clock=lambda: current)
     assert updater.run().published == 1
@@ -77,7 +80,7 @@ def test_unchanged_403_keeps_last_known_good_file(tmp_path: Path) -> None:
     """
 
     config = make_config(tmp_path)
-    payload = omm_payload()
+    payload = omm_csv_payload()
     responses = iter(
         (httpx.Response(200, content=payload), httpx.Response(403, content=UNCHANGED_403))
     )
@@ -95,7 +98,7 @@ def test_unchanged_403_keeps_last_known_good_file(tmp_path: Path) -> None:
     assert result.successful
     assert not result.blocked
     assert result.published == 0
-    assert (config.storage.root / "public/v1/gp/active.json").read_bytes() == payload
+    assert (config.storage.root / "public/v1/gp/active.json").read_bytes() == omm_payload()
     state = orjson.loads((config.storage.root / "state/gp/active.json").read_bytes())
     assert state["last_result"] == "not-updated"
     assert state["last_success"] == NOW.isoformat()
@@ -125,7 +128,7 @@ def test_unexplained_403_stops_the_run_and_records_the_reason(tmp_path: Path) ->
 
 def test_invalid_response_stops_and_preserves_current_file(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    payload = omm_payload()
+    payload = omm_csv_payload()
     responses = iter((httpx.Response(200, content=payload), httpx.Response(200, content=b"<html>")))
     current = NOW
     updater = GpUpdater(
@@ -140,7 +143,7 @@ def test_invalid_response_stops_and_preserves_current_file(tmp_path: Path) -> No
 
     assert result.stopped
     assert result.failed == 1
-    assert (config.storage.root / "public/v1/gp/active.json").read_bytes() == payload
+    assert (config.storage.root / "public/v1/gp/active.json").read_bytes() == omm_payload()
     state = orjson.loads((config.storage.root / "state/gp/active.json").read_bytes())
     assert state["last_result"] == "validation-error"
 
@@ -220,7 +223,7 @@ def test_one_network_failure_does_not_starve_later_datasets(tmp_path: Path) -> N
         seen.append(group)
         if group == "first":
             raise httpx.ConnectError("timed out", request=request)
-        return httpx.Response(200, content=omm_payload())
+        return httpx.Response(200, content=omm_csv_payload())
 
     result = GpUpdater(config, transport=_transport(handler), clock=lambda: NOW).run()
 
@@ -260,7 +263,7 @@ def test_reaching_celestrak_clears_an_earlier_network_failure(tmp_path: Path) ->
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.params["GROUP"] == "second":
-            return httpx.Response(200, content=omm_payload())
+            return httpx.Response(200, content=omm_csv_payload())
         raise httpx.ConnectError("timed out", request=request)
 
     result = GpUpdater(config, transport=_transport(handler), clock=lambda: NOW).run()
@@ -308,7 +311,7 @@ def test_served_response_holds_the_full_upstream_floor(tmp_path: Path) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, content=omm_payload())
+        return httpx.Response(200, content=omm_csv_payload())
 
     updater = GpUpdater(config, transport=_transport(handler), clock=lambda: current)
     updater.run()
@@ -336,7 +339,7 @@ def test_dataset_that_stops_the_run_rotates_behind_the_others(tmp_path: Path) ->
         runs[-1].append(group)
         if group == "first":
             return httpx.Response(503)
-        return httpx.Response(200, content=omm_payload())
+        return httpx.Response(200, content=omm_csv_payload())
 
     updater = GpUpdater(config, transport=_transport(handler), clock=lambda: current)
     runs.append([])
@@ -358,7 +361,7 @@ def test_oversized_response_is_not_published(tmp_path: Path) -> None:
 
     result = GpUpdater(
         config,
-        transport=_transport(lambda _request: httpx.Response(200, content=omm_payload(20))),
+        transport=_transport(lambda _request: httpx.Response(200, content=omm_csv_payload(20))),
         clock=lambda: NOW,
     ).run()
 
@@ -378,7 +381,7 @@ def test_corrupt_state_prevents_an_unprovable_request(tmp_path: Path) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, content=omm_payload())
+        return httpx.Response(200, content=omm_csv_payload())
 
     result = GpUpdater(config, transport=_transport(handler), clock=lambda: NOW).run()
 
@@ -390,7 +393,10 @@ def test_corrupt_state_prevents_an_unprovable_request(tmp_path: Path) -> None:
 def test_large_record_drop_is_not_published(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     responses = iter(
-        (httpx.Response(200, content=omm_payload(10)), httpx.Response(200, content=omm_payload(5)))
+        (
+            httpx.Response(200, content=omm_csv_payload(10)),
+            httpx.Response(200, content=omm_csv_payload(5)),
+        )
     )
     current = NOW
     updater = GpUpdater(
@@ -448,7 +454,7 @@ def test_every_dataset_unchanged_is_a_healthy_run(tmp_path: Path) -> None:
 def test_daily_byte_budget_stops_further_downloads(tmp_path: Path) -> None:
     """The backstop against CelesTrak's 100 MB/day firewall threshold."""
 
-    payload = omm_payload(4)
+    payload = omm_csv_payload(8)
     config = make_config(tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(payload))
     calls = 0
 
@@ -468,7 +474,7 @@ def test_daily_byte_budget_stops_further_downloads(tmp_path: Path) -> None:
 def test_byte_budget_survives_a_restart(tmp_path: Path) -> None:
     """The ledger is on the persistent volume, so a restart cannot reset it."""
 
-    payload = omm_payload(4)
+    payload = omm_csv_payload(8)
     config = make_config(tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(payload))
     current = NOW
 
@@ -487,7 +493,7 @@ def test_byte_budget_survives_a_restart(tmp_path: Path) -> None:
 
 
 def test_byte_budget_window_rolls_off_after_a_day(tmp_path: Path) -> None:
-    payload = omm_payload(4)
+    payload = omm_csv_payload(8)
     config = make_config(tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(payload))
     current = NOW
 
@@ -511,11 +517,11 @@ def test_oversized_response_bytes_still_reach_the_ledger(tmp_path: Path) -> None
     """Bytes pulled before an abort were still sent, and still count.
 
     Accounting only on the success path under-counts precisely in the heaviest
-    cases: two aborted 64 MiB responses would cross CelesTrak's daily threshold
-    while `daily_bytes` reported zero.
+    cases: four aborted responses at the configured ceiling would cross
+    CelesTrak's daily threshold while `daily_bytes` reported zero.
     """
 
-    payload = omm_payload(20)
+    payload = omm_csv_payload(20)
     config = make_config(tmp_path, maximum_response_bytes=1024)
 
     result = GpUpdater(
@@ -576,11 +582,11 @@ def test_budget_caps_the_stream_rather_than_overshooting(tmp_path: Path) -> None
     """`maximum_daily_bytes` is a ceiling, not a checkpoint between datasets.
 
     Checking only between datasets leaves it overshootable by one whole
-    response — at the configured 64 MiB response limit, most of a day's
+    response — at the configured 24 MiB response limit, a quarter of a day's
     allowance.
     """
 
-    payload = omm_payload(20)
+    payload = omm_csv_payload(20)
     config = make_config(tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(payload) // 2)
 
     result = GpUpdater(
@@ -631,7 +637,7 @@ def test_unreadable_bandwidth_ledger_fails_open(tmp_path: Path) -> None:
 
     result = GpUpdater(
         config,
-        transport=_transport(lambda _request: httpx.Response(200, content=omm_payload())),
+        transport=_transport(lambda _request: httpx.Response(200, content=omm_csv_payload())),
         clock=lambda: NOW,
     ).run()
 
@@ -640,7 +646,7 @@ def test_unreadable_bandwidth_ledger_fails_open(tmp_path: Path) -> None:
 
 def test_run_summary_reports_bandwidth_and_block_state(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    payload = omm_payload()
+    payload = omm_csv_payload()
 
     GpUpdater(
         config,
@@ -662,7 +668,7 @@ def test_known_size_is_declined_before_the_connection_is_opened(tmp_path: Path) 
     response size is known, a request that cannot finish is never made.
     """
 
-    payload = omm_payload(4)
+    payload = omm_csv_payload(4)
     config = make_config(
         tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(payload) * 3 + 16
     )
@@ -703,7 +709,7 @@ def test_dataset_with_no_recorded_size_is_still_attempted(tmp_path: Path) -> Non
     that was left.
     """
 
-    payload = omm_payload(20)
+    payload = omm_csv_payload(20)
     config = make_config(tmp_path, maximum_daily_bytes=len(payload) // 2)
     calls = 0
 
@@ -738,9 +744,9 @@ def test_declined_dataset_holds_the_queue_head_without_starving_the_rest(
     every refill.
     """
 
-    big, small = omm_payload(60), omm_payload(1)
+    big, small = omm_csv_payload(60), omm_csv_payload(1)
     config = make_config(
-        tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(big) + 30 * len(small)
+        tmp_path, datasets=THREE_DATASETS, maximum_daily_bytes=len(big) + 20 * len(small)
     )
     current = NOW
     runs: list[list[str]] = []
@@ -768,7 +774,7 @@ def test_declined_dataset_holds_the_queue_head_without_starving_the_rest(
     updater.run()
 
     assert runs[3][0] == "first"
-    assert (config.storage.root / "public/v1/gp/first.json").read_bytes() == big
+    assert (config.storage.root / "public/v1/gp/first.json").read_bytes() == omm_payload(60)
 
 
 def test_per_dataset_cap_fails_only_that_dataset(tmp_path: Path) -> None:
@@ -798,7 +804,7 @@ maximum_count_drop_fraction = 1
 
     def handler(request: httpx.Request) -> httpx.Response:
         count = 40 if request.url.params["GROUP"] == "first" else 1
-        return httpx.Response(200, content=omm_payload(count))
+        return httpx.Response(200, content=omm_csv_payload(count))
 
     result = GpUpdater(config, transport=_transport(handler), clock=lambda: NOW).run()
 
@@ -838,7 +844,7 @@ maximum_bytes = 1024
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, content=omm_payload(40))
+        return httpx.Response(200, content=omm_csv_payload(40))
 
     updater = GpUpdater(config, transport=_transport(handler), clock=lambda: current)
     updater.run()
@@ -872,7 +878,7 @@ def test_corrupt_response_size_stays_isolated_to_one_dataset(tmp_path: Path) -> 
 
     result = GpUpdater(
         config,
-        transport=_transport(lambda _request: httpx.Response(200, content=omm_payload())),
+        transport=_transport(lambda _request: httpx.Response(200, content=omm_csv_payload())),
         clock=lambda: NOW,
     ).run()
 
@@ -894,7 +900,7 @@ minimum_records = 1
 maximum_count_drop_fraction = 1
 {cap}
 """
-    payload = omm_payload(10)
+    payload = omm_csv_payload(10)
     config = make_config(tmp_path, datasets=dataset.format(cap=""))
     calls = 0
     current = NOW
@@ -925,7 +931,7 @@ maximum_count_drop_fraction = 1
 def test_status_tree_publishes_the_allowance_and_per_dataset_sizes(tmp_path: Path) -> None:
     """ "Which GROUP is eating the allowance" must be answerable from the tree."""
 
-    payload = omm_payload(3)
+    payload = omm_csv_payload(3)
     budget = 4 * len(payload)
     config = make_config(tmp_path, maximum_daily_bytes=budget)
 
@@ -968,7 +974,7 @@ def test_state_written_before_this_release_still_loads(tmp_path: Path) -> None:
             }
         )
     )
-    payload = omm_payload(2)
+    payload = omm_csv_payload(2)
 
     result = GpUpdater(
         config,

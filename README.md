@@ -26,9 +26,10 @@ The repository is being implemented in stages. It currently provides:
 - TOML configuration;
 - atomic static-file and release-directory publication;
 - bounded release retention;
-- a sequential, allow-listed CelesTrak OMM/JSON cache with a persistent
-  two-hour minimum request interval, a rolling daily byte budget with
-  pre-flight size estimates, and optional per-dataset byte caps;
+- a sequential, allow-listed CelesTrak OMM cache, fetched as CSV and published
+  as OMM JSON, with a persistent two-hour minimum request interval, a rolling
+  daily byte budget with pre-flight size estimates, and optional per-dataset
+  byte caps;
 - derived datasets filtered out of an already-fetched one, so a constellation
   that is a strict subset of `active` is published without being downloaded;
 - response-size, schema, physical-range, duplicate-ID, record-floor and
@@ -107,8 +108,12 @@ starves everything behind it on every subsequent run.
 
 CelesTrak firewalls IP addresses that pull more than 100 MB/day, and `gp.php`
 serves no compression, so the whole allowance is spent in uncompressed
-responses. Three things keep this service well under that:
+responses — which leaves the wire format itself as one of the few levers there
+are. Four things keep this service well under the threshold:
 
+- the request asks for CSV, not JSON. The same records rendered as JSON are
+  about three times the size, and that alone was most of this service's traffic
+  — see [Wire format](#wire-format-csv-in-json-out);
 - the timer fires every 6h, not at the 2h floor — the underlying 18 SDS GP data
   only updates 2-3 times a day, so faster polling downloads identical bytes;
 - only three queries are made at all. Every constellation GROUP this service
@@ -119,7 +124,8 @@ responses. Three things keep this service well under that:
   volume so a restart or a volume failover cannot hand the process an allowance
   it has already spent. Datasets are skipped once the budget is gone.
 
-The current dataset list costs roughly 6.9 MB per run, or about 28 MB/day.
+The current dataset list costs roughly 2.5 MB per run, or about 10 MB/day. It
+was 6.9 MB per run and about 28 MB/day while the fetch asked for JSON.
 
 The allowance is spent *before* the request, not during it. Each dataset
 remembers the size of its last complete response in
@@ -140,16 +146,69 @@ window rolls.
 
 `[[gp.datasets]]` also takes an optional `maximum_bytes`, a ceiling for that one
 query so a single oversized GROUP cannot spend the shared allowance on its own.
-`active` is capped at 10 MiB against a current size of about 6.9 MB. The key is
-optional and absent means "only the shared allowance applies", so a deployed
-configuration predating it still loads. Breaching a per-dataset cap fails that
-dataset only; it neither stops the run nor reports the shared budget as spent.
+`active` is capped at 4 MiB against a current wire size of about 2.5 MB. Every
+byte figure in the configuration and in the status tree is a wire figure: the
+JSON document published from a response is roughly three times larger, and none
+of it crosses CelesTrak's wire. The key is optional and absent means "only the
+shared allowance applies", so a deployed configuration predating it still loads.
+Breaching a per-dataset cap fails that dataset only; it neither stops the run nor
+reports the shared budget as spent.
 
 `/data/public/v1/status/gp.json` reports `daily_bytes`, `budget_bytes` and
 `budget_remaining_bytes` for the trailing 24 hours, and each
 `/data/public/v1/status/gp/<name>.json` carries that dataset's
 `last_response_bytes` and its configured `maximum_bytes`, so "which GROUP is
 eating the allowance" is answerable from the served tree without journal access.
+
+### Wire format: CSV in, JSON out
+
+`gp.php` will render the same GP records as TLE, CSV or JSON, and the JSON
+rendering is about three times the size of the other two — roughly 420 bytes per
+OMM record against 152. With no compression on offer that difference is paid in
+full, every run, and it was the single largest component of this service's
+traffic. The fetch therefore requests `FORMAT=CSV`.
+
+Only the request changed. `src/orbit_data/omm_csv.py` converts the response into
+exactly the records `FORMAT=JSON` would have returned — same field names, same
+JSON types, same order — and it is that JSON document which is validated,
+hashed, and written to `/data/public/v1/gp/<name>.json`. Every consumer parses
+the same records out of the same fields, so nothing downstream changes.
+
+The *bytes* of the three fetched datasets do change once, and only in
+formatting. `active.json`, `stations.json` and `special-decaying.json` used to
+be CelesTrak's response body written straight to disk; they are now serialized
+by `orjson` here. No value differs — but the whitespace does, so their `sha256`
+changes on the first run after the switch for reasons that have nothing to do
+with the data. Every later change to it means what it always meant: CelesTrak
+published new elements. This is
+not a new class of behaviour: the ten [derived datasets](#derived-datasets)
+have always been `orjson` output, so the switch makes all thirteen published
+files consistent rather than introducing an inconsistency. A consumer that
+pins a hash rather than parsing the file will need to re-pin once; the Orbit
+frontend does not. `sha256` in the state and status documents
+still means "the hash of the file we published", not the hash of the response
+that carried it, and `last_response_bytes` still means the opposite: the size of
+what crossed CelesTrak's wire, because that is the number the budget forecast is
+about.
+
+The one thing the switch genuinely costs is truncation detection. A JSON body
+cut off in flight does not parse, and the fetch fails loudly with the
+last-known-good file untouched; a CSV body cut off in flight parses perfectly
+well as fewer rows. Three guards replace what JSON gave for free:
+
+- the header must contain every field the OMM validator requires, and columns
+  are read by name, so an upstream reordering moves values with their names
+  rather than shifting a catalogue one column to the left;
+- every data row must have exactly the header's field count, which is the shape
+  a body cut off mid-line actually has;
+- a body cut off exactly at a line ending is structurally perfect, and nothing
+  in the parse can distinguish it from a genuinely short answer. That case is
+  caught downstream by `minimum_records` and `maximum_count_drop_fraction`,
+  which is why those two settings matter more than they used to.
+
+Anything that fails is an `OmmValidationError`, which reaches the same handling
+an unparseable JSON body did: the run stops and the last-known-good file stays
+where it is.
 
 ### Derived datasets
 

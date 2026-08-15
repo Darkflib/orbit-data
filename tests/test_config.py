@@ -201,8 +201,12 @@ def test_production_config_covers_orbit_datasets() -> None:
     # datasets, so it is the one that has to be rationed rather than allowed to
     # spend the shared allowance on its own.
     active = next(dataset for dataset in config.gp.datasets if dataset.name == "active")
-    assert active.maximum_bytes == 10 * 1024**2
+    # Sized against the CSV that now crosses the wire — about 2.5 MB — not
+    # against the ~6.9 MB JSON document built from it, which never leaves this
+    # host. A cap left at the JSON figure would ration nothing.
+    assert active.maximum_bytes == 4 * 1024**2
     assert active.maximum_bytes < config.gp.maximum_daily_bytes
+    assert config.gp.maximum_response_bytes == 24 * 1024**2
 
 
 def test_health_thresholds_default_when_the_table_is_absent(tmp_path: Path) -> None:

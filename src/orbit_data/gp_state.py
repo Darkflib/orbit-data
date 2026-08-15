@@ -106,6 +106,21 @@ class DatasetState:
     # never observed, which includes every dataset whose state was written by a
     # release predating this field — `load` fills it from the default.
     last_response_bytes: int | None = None
+    # Which wire format produced `last_response_bytes`. A size measured under one
+    # format forecasts nothing about another: the JSON rendering of a GP record
+    # is about three times the CSV one, so a JSON-era measurement compared
+    # against a CSV-era cap is not a cautious over-estimate but a wrong answer.
+    # It is wrong in the direction that cannot recover on its own, because
+    # `_preflight` declines without opening the request that would replace the
+    # figure, and declining neither advances `last_attempt` nor updates the size.
+    # `None` means the format was not recorded — every state file written before
+    # this field existed, i.e. every one on a volume upgrading across the switch
+    # — and is deliberately treated as "unusable forecast" rather than "assume
+    # the current format". A value of an unexpected type fails the same way for
+    # the same reason: anything that is not the format in use now simply is not
+    # a forecast, and the dataset is attempted with the stream bounded to the
+    # remaining allowance exactly as a never-measured one is.
+    wire_format: str | None = None
 
     @classmethod
     def load(cls, path: Path) -> DatasetState:

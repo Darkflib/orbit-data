@@ -4,6 +4,12 @@
 [Darkflib/orbit](https://github.com/Darkflib/orbit). Satellite enrichment files
 record the winning source for each field in their `_sources` object.
 
+- **CelesTrak GP element sets** — T.S. Kelso, [celestrak.org](https://celestrak.org/),
+  used with attribution. Fetched from `https://celestrak.org/NORAD/elements/gp.php`
+  as `FORMAT=CSV` and republished under `/v1/gp/` as OMM JSON. The CSV rendering
+  is about a third the size of the JSON one and `gp.php` serves no compression,
+  so the conversion happens here rather than being asked of CelesTrak; the
+  published records are the ones `FORMAT=JSON` would have returned.
 - **CelesTrak SATCAT** — T.S. Kelso, [celestrak.org](https://celestrak.org/),
   used with attribution. Fetched from `https://celestrak.org/pub/satcat.csv`. It
   is the only source that says why an object has no element set, and the only

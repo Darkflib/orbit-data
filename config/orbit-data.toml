@@ -18,12 +18,17 @@ minimum_interval_seconds = 7500
 # surrendering a whole cycle to a dropped packet.
 network_retry_interval_seconds = 900
 # CelesTrak firewalls IP addresses pulling more than 100 MB/day, and gp.php
-# serves no compression. This is a backstop against a misedited dataset list;
-# the primary control is the timer cadence.
+# serves no compression — which is why the fetch asks for FORMAT=CSV and builds
+# the published JSON locally. This is a backstop against a misedited dataset
+# list; the primary control is the timer cadence.
 maximum_daily_bytes = 83886080
 connect_timeout_seconds = 10
 read_timeout_seconds = 90
-maximum_response_bytes = 67108864
+# A backstop against a runaway body, sized against what now crosses the wire:
+# the largest response is `active` at roughly 2.5 MB of CSV. This was 64 MiB
+# when the wire format was JSON, and a ceiling twenty-five times the largest
+# expected response has stopped being a backstop at all.
+maximum_response_bytes = 25165824
 
 # Only three queries reach CelesTrak. Everything else this service publishes is
 # filtered out of `active` locally — see [[gp.derived]] below for why, and for
@@ -35,19 +40,21 @@ value = "active"
 minimum_records = 10000
 maximum_count_drop_fraction = 0.20
 # The only large query left, and now the source for ten published datasets
-# rather than one: ~16,300 objects at roughly 418 uncompressed bytes per OMM
-# record, about 6.9 MB per download. 10 MiB leaves ~45% headroom for catalogue
-# growth while keeping a single GROUP from quietly consuming the whole 80 MiB
-# daily allowance if a query ever returns something far larger than expected.
-# Raise this deliberately rather than letting it drift; it is a ration, not a
-# size assertion.
-maximum_bytes = 10485760
+# rather than one: ~16,300 objects at roughly 152 uncompressed bytes per OMM
+# record as CSV, about 2.5 MB per download. The same records are published as
+# JSON at roughly 420 bytes each — about 6.9 MB on disk — but that document is
+# built here and never crosses CelesTrak's wire, so it is the CSV figure this
+# cap rations. 4 MiB leaves ~40% headroom for catalogue growth while keeping a
+# single GROUP from quietly consuming the whole 80 MiB daily allowance if a
+# query ever returns something far larger than expected. Raise this deliberately
+# rather than letting it drift; it is a ration, not a size assertion.
+maximum_bytes = 4194304
 
 # Not derivable from `active`, and the reason this is still fetched. The group
 # is the ISS and CSS complexes, their visiting crew and cargo craft, and the
 # smallsats deployed from them — an editorial selection with no name pattern
-# and no orbital signature. It is also ~9 KB, so deriving it would save
-# nothing. Two of its members are debris that `active` does not carry at all.
+# and no orbital signature. It is also ~3 KB on the wire, so deriving it would
+# save nothing. Two of its members are debris `active` does not carry at all.
 [[gp.datasets]]
 name = "stations"
 query = "GROUP"
@@ -57,7 +64,7 @@ maximum_count_drop_fraction = 0.35
 
 # Also not derivable: a curated watch list that is mostly *not* active. Of 77
 # objects on a recent pull, 12 were debris or spent rocket bodies absent from
-# `active` — a FENGYUN 1C fragment, a CZ-2C body, ISS debris. ~33 KB.
+# `active` — a FENGYUN 1C fragment, a CZ-2C body, ISS debris. ~12 KB as CSV.
 [[gp.datasets]]
 name = "special-decaying"
 query = "SPECIAL"
