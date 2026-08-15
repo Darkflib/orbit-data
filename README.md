@@ -178,7 +178,9 @@ The *bytes* of the three fetched datasets do change once, and only in
 formatting. `active.json`, `stations.json` and `special-decaying.json` used to
 be CelesTrak's response body written straight to disk; they are now serialized
 by `orjson` here. No value differs — but the whitespace does, so their `sha256`
-changes on the first run after the switch and does not change again. This is
+changes on the first run after the switch for reasons that have nothing to do
+with the data. Every later change to it means what it always meant: CelesTrak
+published new elements. This is
 not a new class of behaviour: the ten [derived datasets](#derived-datasets)
 have always been `orjson` output, so the switch makes all thirteen published
 files consistent rather than introducing an inconsistency. A consumer that

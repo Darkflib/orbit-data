@@ -23,6 +23,18 @@ from tests.support import make_config, omm_csv, omm_csv_payload, omm_payload, om
 
 NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
 
+# `active` as the shipped configuration now rations it: a cap sized for the
+# CSV body, which a JSON-era measurement sails straight past.
+CAPPED_ACTIVE = """
+[[gp.datasets]]
+name = "active"
+query = "GROUP"
+value = "active"
+minimum_records = 1
+maximum_count_drop_fraction = 0.25
+maximum_bytes = 4194304
+"""
+
 
 def _transport(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
@@ -149,3 +161,92 @@ def test_csv_truncated_on_a_row_boundary_is_caught_by_the_count_guards(tmp_path:
     state = orjson.loads((config.storage.root / "state/gp/active.json").read_bytes())
     assert state["last_result"] == "validation-error"
     assert "record count dropped" in state["error"]
+
+
+def test_a_json_era_size_does_not_freeze_the_dataset_after_the_switch(tmp_path: Path) -> None:
+    """The upgrade path this change would otherwise have broken.
+
+    Every state file on the production volume was written under `FORMAT=JSON`,
+    and `active`'s records roughly 6.9 MB. The same release that switches to CSV
+    lowers that dataset's cap to 4 MiB, so the JSON-era figure sits above its own
+    ceiling: `_preflight` would decline it as `over-dataset-cap`, and because a
+    decline deliberately opens no connection, nothing would ever replace the
+    stale size. `active` — and the ten datasets derived from it — would have
+    frozen at the deploy and stayed frozen until someone deleted the state by
+    hand.
+
+    A size is therefore only a forecast alongside the format that produced it.
+    """
+
+    config = make_config(tmp_path, datasets=CAPPED_ACTIVE)
+    state_path = config.storage.root / "state/gp/active.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_bytes(
+        orjson.dumps(
+            {
+                "last_attempt": NOW.isoformat(),
+                "last_success": NOW.isoformat(),
+                "last_result": "published",
+                "record_count": 4,
+                # What the last JSON-format run measured, and well over the cap
+                # this release introduces.
+                "last_response_bytes": 6_900_000,
+            }
+        )
+    )
+    payload = omm_csv_payload(4)
+
+    result = GpUpdater(
+        config,
+        transport=_transport(lambda _request: httpx.Response(200, content=payload)),
+        clock=lambda: NOW + timedelta(hours=3),
+    ).run()
+
+    assert result.published == 1
+    state = orjson.loads(state_path.read_bytes())
+    assert state["last_result"] == "published"
+    # Re-measured under the format in use, so the forecast is live again from
+    # the next run rather than discarded on every one.
+    assert state["last_response_bytes"] == len(payload)
+    assert state["wire_format"] == "CSV"
+
+
+def test_a_csv_era_size_over_the_cap_is_still_declined(tmp_path: Path) -> None:
+    """Discarding a stale forecast must not discard a valid one.
+
+    The migration above is the only reason `_expected_bytes` ignores a recorded
+    size. A dataset measured under the format in use now has a real forecast, and
+    a real forecast over the cap is exactly what `_preflight` exists to refuse
+    before the connection is opened.
+    """
+
+    config = make_config(tmp_path, datasets=CAPPED_ACTIVE)
+    state_path = config.storage.root / "state/gp/active.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_bytes(
+        orjson.dumps(
+            {
+                "last_attempt": NOW.isoformat(),
+                "last_result": "published",
+                "last_response_bytes": 6_900_000,
+                "wire_format": "CSV",
+            }
+        )
+    )
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=omm_csv_payload(4))
+
+    # Past the request floor, so the decline below is `_preflight`'s and not the
+    # not-due check quietly passing the test for the wrong reason.
+    result = GpUpdater(
+        config, transport=_transport(handler), clock=lambda: NOW + timedelta(hours=3)
+    ).run()
+
+    assert calls == 0
+    assert result.skipped == 1
+    state = orjson.loads(state_path.read_bytes())
+    assert state["last_result"] == "over-dataset-cap"

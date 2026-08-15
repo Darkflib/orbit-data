@@ -2,12 +2,21 @@
 
 # pylint: disable=missing-function-docstring
 
+import csv
+
 import orjson
 import pytest
 
 from orbit_data.omm import OmmValidationError
 from orbit_data.omm_csv import parse_omm_csv
-from tests.support import CSV_COLUMNS, omm_csv, omm_csv_payload, omm_payload, omm_record
+from tests.support import (
+    CSV_COLUMNS,
+    omm_csv,
+    omm_csv_payload,
+    omm_payload,
+    omm_record,
+    omm_records,
+)
 
 HEADER = ",".join(CSV_COLUMNS)
 ROW = (
@@ -99,3 +108,48 @@ def test_structural_damage_is_refused(payload: bytes, message: str) -> None:
 
     with pytest.raises(OmmValidationError, match=message):
         parse_omm_csv(payload)
+
+
+def test_an_unterminated_quoted_field_is_rejected() -> None:
+    """The truncation the row-width check cannot see.
+
+    `csv.reader` defaults to lenient quoting: a body cut off inside a quoted
+    OBJECT_NAME comes back as a row of the right width whose last field is a
+    fragment. `strict=True` raises instead — and `csv.Error` is neither an
+    `OmmValidationError` nor a `GpUpdateError`, so leaving it untranslated would
+    let it escape the per-dataset handling in `run` and take the updater down
+    without a run summary.
+    """
+
+    body = omm_csv(omm_records(2))
+    truncated = body[: body.rindex(b"\n") + 1] + b'"STARLINK-999'
+
+    with pytest.raises(OmmValidationError, match="malformed"):
+        parse_omm_csv(truncated)
+
+
+def test_an_oversized_field_is_rejected() -> None:
+    """`csv.field_size_limit()` raises the same `csv.Error`, by the same route."""
+
+    header = b",".join(field.encode() for field in CSV_COLUMNS)
+    body = header + b"\n" + b"A" * (csv.field_size_limit() + 1) + b"\n"
+
+    with pytest.raises(OmmValidationError, match="malformed"):
+        parse_omm_csv(body)
+
+
+def test_an_integer_too_large_to_serialize_is_rejected() -> None:
+    """Bounded here so `orjson.dumps` cannot raise downstream.
+
+    Python integers are unbounded and orjson's are not. An absurd NORAD_CAT_ID
+    would survive `int()`, reach `orjson.dumps` in `_handle_response`, and raise
+    `JSONEncodeError` — a `TypeError`, and so another escape from the
+    per-dataset handling. The validator's own range check never gets a look in,
+    because serialization happens first.
+    """
+
+    records = omm_records(1)
+    records[0]["NORAD_CAT_ID"] = 2**70
+
+    with pytest.raises(OmmValidationError, match="out-of-range NORAD_CAT_ID"):
+        parse_omm_csv(omm_csv(records))

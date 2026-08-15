@@ -28,6 +28,7 @@ from __future__ import annotations
 import csv
 import io
 import math
+from collections.abc import Iterator
 from typing import Any
 
 from orbit_data.omm import REQUIRED_FIELDS, OmmValidationError
@@ -53,15 +54,30 @@ _FLOAT_FIELDS = frozenset(
 )
 _INTEGER_FIELDS = frozenset({"EPHEMERIS_TYPE", "NORAD_CAT_ID", "ELEMENT_SET_NO", "REV_AT_EPOCH"})
 
+# Python integers are unbounded and orjson's are not: it raises JSONEncodeError
+# outside the signed-64/unsigned-64 window. That exception is a TypeError, not an
+# OmmValidationError, so it would escape the per-dataset handling in `run` and
+# take the whole updater down without even writing a run summary — the same
+# escape route `DatasetState.load` already guards `record_count` against. Every
+# integer in an OMM record is small (a catalogue number, a set number, a rev
+# count), so anything beyond this is damage, and naming it here keeps the
+# promise this module makes: records, or `OmmValidationError`, never a third
+# thing.
+_INTEGER_MINIMUM = -(2**63) + 1
+_INTEGER_MAXIMUM = 2**64 - 1
+
 
 def _coerce(field: str, value: str, row: int) -> Any:
     """Give one CSV cell the type gp.php's JSON rendering would have given it."""
 
     if field in _INTEGER_FIELDS:
         try:
-            return int(value)
+            whole = int(value)
         except ValueError as exc:
             raise OmmValidationError(f"CSV row {row} has invalid {field}") from exc
+        if not _INTEGER_MINIMUM <= whole <= _INTEGER_MAXIMUM:
+            raise OmmValidationError(f"CSV row {row} has out-of-range {field}")
+        return whole
     if field not in _FLOAT_FIELDS:
         return value
     try:
@@ -74,6 +90,23 @@ def _coerce(field: str, value: str, row: int) -> Any:
     if not math.isfinite(number):
         raise OmmValidationError(f"CSV row {row} has non-finite {field}")
     return number
+
+
+def _rows(reader: Iterator[list[str]]) -> Iterator[list[str]]:
+    """Yield rows, turning a mid-iteration `csv.Error` into a validation error.
+
+    The reader parses lazily, so malformed quoting is raised where the row is
+    consumed rather than where the reader is built. Wrapping the iteration is
+    what keeps that failure inside this module's contract.
+    """
+
+    while True:
+        try:
+            yield next(reader)
+        except StopIteration:
+            return
+        except csv.Error as exc:
+            raise OmmValidationError(f"CSV body is malformed: {exc}") from exc
 
 
 def parse_omm_csv(payload: bytes) -> list[dict[str, Any]]:
@@ -95,18 +128,28 @@ def parse_omm_csv(payload: bytes) -> list[dict[str, Any]]:
         text = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise OmmValidationError("CSV response is not UTF-8") from exc
-    reader = csv.reader(io.StringIO(text, newline=""))
+    # `strict=True` because the default is to accept malformed quoting silently.
+    # A body cut off inside a quoted OBJECT_NAME is exactly that case: the lenient
+    # reader hands back the partial field as though it were whole, which is the
+    # one shape of transit damage the row-width check below cannot see. Strict
+    # mode raises instead — and `csv.Error` is neither an `OmmValidationError`
+    # nor a `GpUpdateError`, so it is translated here rather than left to escape
+    # `run` and kill the updater. The same applies to a field over
+    # `csv.field_size_limit()`.
+    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
     try:
         header = next(reader)
     except StopIteration:
         raise OmmValidationError("CSV response has no header row") from None
+    except csv.Error as exc:
+        raise OmmValidationError(f"CSV header is malformed: {exc}") from exc
     missing = REQUIRED_FIELDS.difference(header)
     if missing:
         raise OmmValidationError(f"CSV header missing fields: {', '.join(sorted(missing))}")
 
     width = len(header)
     records: list[dict[str, Any]] = []
-    for index, row in enumerate(reader):
+    for index, row in enumerate(_rows(reader)):
         # The truncation guard. A short row is the shape a body cut off
         # mid-flight actually has, and a long one means the quoting has gone
         # wrong somewhere upstream; either way the values no longer line up with
