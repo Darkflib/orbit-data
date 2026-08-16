@@ -1,3 +1,13 @@
 # Preserve fixed-width upstream catalogues byte-for-byte.
 vendor/*.dat -whitespace
 vendor/qs.mag -whitespace
+
+# Recorded gp.php responses, kept exactly as CelesTrak served them. The CRLF
+# line endings are the point, not an accident: the CSV parser rejects a body
+# that does not end with a record terminator, and `test_omm_csv` asserts the
+# fixture ends `\r\n` to pin that as an upstream fact. Left to `core.autocrlf`
+# these would be normalised to LF on a Windows checkout, or by anyone later
+# adding `* text=auto`, and the guard would fail for a reason unrelated to the
+# code under test.
+tests/fixtures/*.csv -text -whitespace
+tests/fixtures/*.json -text -whitespace
