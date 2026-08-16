@@ -15,12 +15,18 @@ What the switch costs is the one guarantee JSON gave for free. A JSON body cut
 off mid-flight does not parse, and the fetch fails loudly; a CSV body cut off
 mid-flight parses perfectly well as fewer rows, and would publish as a silently
 short catalogue. Everything below is written to fail closed on that: the header
-must carry every field the validator requires, and every data row must be exactly
-as wide as the header, so a truncation that lands mid-line is a hard error rather
-than a missing satellite. A truncation that happens to land on a row boundary is
-structurally indistinguishable from a short answer, and is caught downstream
-instead by `minimum_records` and `maximum_count_drop_fraction` — which is why
-those two guards matter more now than they did when the wire carried JSON.
+must carry every field the validator requires, every data row must be exactly as
+wide as the header, quoting is parsed strictly, and the body must end with a
+record terminator — so a truncation that lands mid-line, or inside the final
+cell, is a hard error rather than a missing satellite. A truncation that happens
+to land exactly on a row boundary remains structurally indistinguishable from a
+short answer, and is caught downstream instead by `minimum_records` and
+`maximum_count_drop_fraction` — which is why those two guards matter more now
+than they did when the wire carried JSON.
+
+The type table and the terminator both rest on a recorded `GROUP=stations`
+response held in `tests/fixtures`, captured once CelesTrak lifted the block.
+They are upstream facts, not inferences, and the tests say so.
 """
 
 from __future__ import annotations
@@ -28,18 +34,27 @@ from __future__ import annotations
 import csv
 import io
 import math
+import re
 from collections.abc import Iterator
 from typing import Any
 
 from orbit_data.omm import REQUIRED_FIELDS, OmmValidationError
 
 # gp.php types its JSON rendering — quoted strings for the identifiers and the
-# epoch, bare numbers for the elements — and CSV carries no types at all. This
-# split is what keeps the published document the one consumers already parse,
-# rather than one where every value has quietly become a string. Fields named in
-# neither set are passed through as strings, which is what gp.php does with
+# epoch, bare numbers for the elements — and CSV carries no types at all. Naming
+# the numeric fields is what keeps the published document the one consumers
+# already parse, rather than one where every value has quietly become a string.
+# Everything else is passed through as a string, which is what gp.php does with
 # OBJECT_NAME, OBJECT_ID, EPOCH and CLASSIFICATION_TYPE.
-_FLOAT_FIELDS = frozenset(
+#
+# One set rather than separate float and integer sets, because which of the two
+# a field gets is not a property of the field. gp.php renders MEAN_MOTION_DDOT
+# as `0` — a JSON integer — while BSTAR beside it is `9.9347502e-05`, and both
+# live in the same part of the record. The type follows the *token*: a bare run
+# of digits is an integer, anything carrying a decimal point or an exponent is a
+# float. Verified field-by-field against a recorded gp.php response pair in
+# tests/fixtures; see `test_matches_recorded_upstream_response`.
+_NUMERIC_FIELDS = frozenset(
     {
         "MEAN_MOTION",
         "ECCENTRICITY",
@@ -50,9 +65,15 @@ _FLOAT_FIELDS = frozenset(
         "BSTAR",
         "MEAN_MOTION_DOT",
         "MEAN_MOTION_DDOT",
+        "EPHEMERIS_TYPE",
+        "NORAD_CAT_ID",
+        "ELEMENT_SET_NO",
+        "REV_AT_EPOCH",
     }
 )
-_INTEGER_FIELDS = frozenset({"EPHEMERIS_TYPE", "NORAD_CAT_ID", "ELEMENT_SET_NO", "REV_AT_EPOCH"})
+
+# A token gp.php would have rendered as a JSON integer rather than a float.
+_INTEGER_TOKEN = re.compile(r"^[+-]?[0-9]+$")
 
 # Python integers are unbounded and orjson's are not: it raises JSONEncodeError
 # outside the signed-64/unsigned-64 window. That exception is a TypeError, not an
@@ -70,16 +91,13 @@ _INTEGER_MAXIMUM = 2**64 - 1
 def _coerce(field: str, value: str, row: int) -> Any:
     """Give one CSV cell the type gp.php's JSON rendering would have given it."""
 
-    if field in _INTEGER_FIELDS:
-        try:
-            whole = int(value)
-        except ValueError as exc:
-            raise OmmValidationError(f"CSV row {row} has invalid {field}") from exc
+    if field not in _NUMERIC_FIELDS:
+        return value
+    if _INTEGER_TOKEN.match(value):
+        whole = int(value)
         if not _INTEGER_MINIMUM <= whole <= _INTEGER_MAXIMUM:
             raise OmmValidationError(f"CSV row {row} has out-of-range {field}")
         return whole
-    if field not in _FLOAT_FIELDS:
-        return value
     try:
         number = float(value)
     except ValueError as exc:
@@ -128,6 +146,20 @@ def parse_omm_csv(payload: bytes) -> list[dict[str, Any]]:
         text = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise OmmValidationError("CSV response is not UTF-8") from exc
+    # gp.php terminates its last row like every other one — a recorded response
+    # ends `...,.5115E-4,0\r\n` — so a body that stops without one stopped early.
+    # This is the case the row-width check below cannot see: a connection cut
+    # inside the final cell still yields a row of the right width whose last
+    # value is a fragment, and a cut immediately after it yields a row that is
+    # entirely correct. Both are short catalogues wearing a complete one's
+    # clothes, and both end without the terminator.
+    #
+    # It is checked against a recorded response rather than assumed, because
+    # failing closed on a guess would have rejected every response and taken the
+    # whole feed down — a far worse outcome than the fault it prevents. An empty
+    # body falls through to the header check below, which names it better.
+    if payload and not text.endswith("\n"):
+        raise OmmValidationError("CSV response does not end with a record terminator")
     # `strict=True` because the default is to accept malformed quoting silently.
     # A body cut off inside a quoted OBJECT_NAME is exactly that case: the lenient
     # reader hands back the partial field as though it were whole, which is the

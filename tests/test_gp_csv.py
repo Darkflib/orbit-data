@@ -109,7 +109,13 @@ def test_truncated_csv_body_is_rejected_rather_than_published_short(tmp_path: Pa
 
     config = make_config(tmp_path)
     full = omm_csv_payload(10)
-    responses = iter((httpx.Response(200, content=full), httpx.Response(200, content=full[:-40])))
+    # Terminated on purpose. A body cut mid-line loses its trailing newline too,
+    # and would be caught a step earlier by the record-terminator guard; this
+    # test is here for the row-width check, so it hands over a body that is
+    # properly terminated and merely ragged — the shape a mangled row has when
+    # the connection did not drop.
+    ragged = full[: full.rindex(b"\r\n", 0, -2) + 2] + b"MANGLED,1998-067A,7\r\n"
+    responses = iter((httpx.Response(200, content=full), httpx.Response(200, content=ragged)))
     current = NOW
     updater = GpUpdater(
         config,

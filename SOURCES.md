@@ -9,7 +9,12 @@ record the winning source for each field in their `_sources` object.
   as `FORMAT=CSV` and republished under `/v1/gp/` as OMM JSON. The CSV rendering
   is about a third the size of the JSON one and `gp.php` serves no compression,
   so the conversion happens here rather than being asked of CelesTrak; the
-  published records are the ones `FORMAT=JSON` would have returned.
+  published records are the ones `FORMAT=JSON` would have returned. One
+  `GROUP=stations` response — 22 objects, ~13 KB across both formats — is
+  committed under `tests/fixtures/` and used to prove that claim rather than
+  assert it. It is CelesTrak's data, redistributed under the same attribution
+  as everything else here, and captured once rather than fetched by the suite,
+  so the tests place no load on their service.
 - **CelesTrak SATCAT** — T.S. Kelso, [celestrak.org](https://celestrak.org/),
   used with attribution. Fetched from `https://celestrak.org/pub/satcat.csv`. It
   is the only source that says why an object has no element set, and the only

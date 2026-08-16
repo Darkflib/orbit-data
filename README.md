@@ -194,17 +194,26 @@ about.
 The one thing the switch genuinely costs is truncation detection. A JSON body
 cut off in flight does not parse, and the fetch fails loudly with the
 last-known-good file untouched; a CSV body cut off in flight parses perfectly
-well as fewer rows. Three guards replace what JSON gave for free:
+well as fewer rows. Four guards replace what JSON gave for free:
 
 - the header must contain every field the OMM validator requires, and columns
   are read by name, so an upstream reordering moves values with their names
   rather than shifting a catalogue one column to the left;
-- every data row must have exactly the header's field count, which is the shape
-  a body cut off mid-line actually has;
-- a body cut off exactly at a line ending is structurally perfect, and nothing
-  in the parse can distinguish it from a genuinely short answer. That case is
-  caught downstream by `minimum_records` and `maximum_count_drop_fraction`,
-  which is why those two settings matter more than they used to.
+- every data row must have exactly the header's field count, and quoting is
+  parsed strictly, so a mangled row is an error rather than a shrug;
+- the body must end with a record terminator. `gp.php` terminates its last row
+  like every other one, so a body that stops without one stopped early — which
+  covers the case the width check cannot see, a cut inside or immediately after
+  the final cell, where the row is full width and looks perfectly well formed.
+  This guard is checked against a recorded response in `tests/fixtures` rather
+  than assumed: if upstream ever stopped terminating, failing closed on a guess
+  would reject *every* response and stop the feed, which is far worse than the
+  fault it prevents;
+- a body cut off exactly at a line ending is still structurally perfect, and
+  nothing in the parse can distinguish it from a genuinely short answer. That
+  case is caught downstream by `minimum_records` and
+  `maximum_count_drop_fraction`, which is why those two settings matter more
+  than they used to.
 
 Anything that fails is an `OmmValidationError`, which reaches the same handling
 an unparseable JSON body did: the run stops and the last-known-good file stays
