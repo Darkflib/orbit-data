@@ -3,6 +3,7 @@
 # pylint: disable=missing-function-docstring
 
 import csv
+from pathlib import Path
 
 import orjson
 import pytest
@@ -121,8 +122,11 @@ def test_an_unterminated_quoted_field_is_rejected() -> None:
     without a run summary.
     """
 
+    # Terminated, so the record-terminator guard passes and strict quoting is
+    # what has to catch this — the two failures are layered and each test pins
+    # its own layer.
     body = omm_csv(omm_records(2))
-    truncated = body[: body.rindex(b"\n") + 1] + b'"STARLINK-999'
+    truncated = body[: body.rindex(b"\n") + 1] + b'"STARLINK-999\r\n'
 
     with pytest.raises(OmmValidationError, match="malformed"):
         parse_omm_csv(truncated)
@@ -153,3 +157,61 @@ def test_an_integer_too_large_to_serialize_is_rejected() -> None:
 
     with pytest.raises(OmmValidationError, match="out-of-range NORAD_CAT_ID"):
         parse_omm_csv(omm_csv(records))
+
+
+def _fixture(name: str) -> bytes:
+    return (Path(__file__).parent / "fixtures" / name).read_bytes()
+
+
+def test_matches_recorded_upstream_response() -> None:
+    """The conversion, checked against gp.php rather than against itself.
+
+    Every other test here builds both sides of the comparison from the same
+    record dicts, which pins the round trip but says nothing about what CelesTrak
+    actually serves. These two fixtures are one real `GROUP=stations` response in
+    both formats, recorded on 2026-08-16 once the block was lifted. They are what
+    makes the type table in `omm_csv` evidence rather than inference — in
+    particular that MEAN_MOTION_DDOT arrives as a JSON integer while BSTAR beside
+    it is a float, which is why the coercion keys on the token and not the field.
+    """
+
+    ours = parse_omm_csv(_fixture("gp-stations.csv"))
+    upstream = orjson.loads(_fixture("gp-stations.json"))
+
+    assert len(ours) == len(upstream)
+    for ours_record, upstream_record in zip(ours, upstream, strict=True):
+        # Key order too: it decides the byte order of the published document.
+        assert list(ours_record) == list(upstream_record)
+        for field, expected in upstream_record.items():
+            assert ours_record[field] == expected
+            assert type(ours_record[field]) is type(expected), field
+
+
+def test_the_recorded_response_ends_with_a_record_terminator() -> None:
+    """The upstream fact the truncation guard rests on.
+
+    Rejecting an unterminated body is only safe while gp.php terminates the last
+    row, and if that ever stops being true the guard rejects *every* response and
+    the feed stops. Pinned here so the day it changes we learn it from a fixture
+    refresh rather than from a silent outage.
+    """
+
+    assert _fixture("gp-stations.csv").endswith(b"\r\n")
+
+
+def test_a_body_without_a_record_terminator_is_rejected() -> None:
+    """The truncation the row-width check cannot see.
+
+    A connection cut inside the final cell leaves a row of the correct width
+    whose last value is a fragment; a cut immediately after that cell leaves a
+    row that is entirely correct. Neither is short enough for the count guards to
+    notice on a large catalogue. Both stop without the terminator.
+    """
+
+    body = _fixture("gp-stations.csv")
+
+    with pytest.raises(OmmValidationError, match="record terminator"):
+        parse_omm_csv(body.rstrip(b"\r\n"))
+    # Cut mid-token in the final cell: still full width, still no terminator.
+    with pytest.raises(OmmValidationError, match="record terminator"):
+        parse_omm_csv(body[:-4])
