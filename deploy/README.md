@@ -235,6 +235,36 @@ duplicate pages, while a failed `orbit-data-alert@…` unit remains visible to
 the operator. If the credential is absent, the alert unit is skipped and the
 original failure remains in its journal.
 
+It also reports why the unit failed. systemd's own verdict —
+`$MONITOR_SERVICE_RESULT` and `$MONITOR_EXIT_STATUS`, which need systemd 251 or
+newer — arrives as `Result: exit-code (status 1)`, separating a critical check
+from an out-of-memory kill or a timeout. That is not enough on its own, because
+every critical health check exits 1, so the alert unit also reads the journal of
+the failed invocation and the container reduces it to the records that explain
+the failure:
+
+```
+*Cause:*
+health check check=gp:active severity=critical detail=41.2h old; last error: HTTP 503
+health check check=storage severity=critical detail=384 MiB free
+```
+
+Warnings are shown only when nothing failed at error level, and unstructured
+output is used when the application never got far enough to log — an image pull
+that cannot reach GHCR leaves only podman's own message, and that message is the
+whole story. The excerpt is scoped to the one failed invocation rather than to
+the unit, so the previous healthy run cannot leak into it, and it is passed to
+the container as a command argument: it is the service's own log output, and the
+credential keeps standard input to itself. On a manager without `$MONITOR_*` the
+alert still delivers, with those fields omitted.
+
+The alert unit and the application image upgrade independently: the unit passes
+arguments only a build carrying this change understands, and `--pull=never`
+means it uses whatever `:latest` is already on the host. Installing the units
+ahead of the image leaves `orbit-data-alert@…` failing visibly — with the
+original failure still in its own journal — until the next `Pull=newer` start
+refreshes the image.
+
 Thresholds live in the optional `[health]` table of `/etc/orbit-data.toml`
 (18h/36h for GP, 36h/72h for the catalogue, 2 GiB/512 MiB free). The GP
 thresholds are looser than the 6-hour timer implies on purpose: `last_success`

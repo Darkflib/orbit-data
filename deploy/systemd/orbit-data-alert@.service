@@ -17,5 +17,28 @@ Type=oneshot
 # argument, or container mount. That keeps the webhook out of `podman inspect`
 # and lets the alert container stay unprivileged.
 LoadCredential=slack-webhook-url:/etc/orbit-data/credentials/slack-webhook-url
-ExecStart=/bin/sh -ec 'exec /usr/bin/podman run --pull=never --rm --interactive --read-only --cap-drop=all --security-opt=no-new-privileges --pids-limit=64 --network=systemd-orbit-egress --user=10001:10001 ghcr.io/darkflib/orbit-data:latest alert-slack --unit "%i" --host "%H" --webhook-stdin < "$CREDENTIALS_DIRECTORY/slack-webhook-url"'
+# `$MONITOR_*` is what systemd tells an `OnFailure=` unit about the failure it
+# is reacting to (v251+): the result, the exit status, and the invocation of
+# the run that failed. Instantiating this template per `%n` is what keeps them
+# available — systemd omits them when one alert unit is triggered by several
+# services at once, which a shared instance would be.
+#
+# `--result` alone cannot say *why* a check failed: every critical health check
+# exits 1, so the alert would read "exit-code (status 1)" whether the volume
+# filled up or CelesTrak went away. The journal of that one invocation carries
+# the per-check records that answer it, and `alert-slack` reduces them to the
+# failing lines. The excerpt is passed as an argument rather than on stdin,
+# which the credential owns; it is this service's own log output, and anything
+# genuinely secret must not be logged in the first place.
+#
+# 60 lines covers a whole health-check pass (one record per check, currently
+# 18) with room for podman's pull progress ahead of it; the container keeps
+# only the handful that explain the failure.
+#
+# Backticks, not `$(…)`: systemd expands `$` in command lines itself, so the
+# `${MONITOR_*}` references resolve whichever layer gets to them first, while
+# command substitution must reach `/bin/sh` untouched. Every failure here is
+# tolerated — an alert that says less is worth far more than one that does not
+# arrive because `journalctl` was unhappy.
+ExecStart=/bin/sh -ec 'exec /usr/bin/podman run --pull=never --rm --interactive --read-only --cap-drop=all --security-opt=no-new-privileges --pids-limit=64 --network=systemd-orbit-egress --user=10001:10001 ghcr.io/darkflib/orbit-data:latest alert-slack --unit "%i" --host "%H" --result "${MONITOR_SERVICE_RESULT}" --exit-status "${MONITOR_EXIT_STATUS}" --cause "`journalctl --quiet --no-pager --output=cat --lines=60 _SYSTEMD_INVOCATION_ID=${MONITOR_INVOCATION_ID} || true`" --webhook-stdin < "$CREDENTIALS_DIRECTORY/slack-webhook-url"'
 TimeoutStartSec=30s

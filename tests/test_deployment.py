@@ -4,6 +4,7 @@
 
 import configparser
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -134,6 +135,134 @@ def test_alert_service_passes_the_slack_credential_only_on_standard_input() -> N
     assert "CREDENTIALS_DIRECTORY" in command
     assert "--pull=never" in command
     assert ":/run/credentials" not in command
+
+
+def test_alert_service_reports_why_the_unit_failed() -> None:
+    command = _unit("orbit-data-alert@.service", directory=SYSTEMD_UNITS)["Service"]["ExecStart"]
+
+    # systemd's own verdict, which distinguishes a critical check from an
+    # out-of-memory kill or a timeout.
+    assert '--result "${MONITOR_SERVICE_RESULT}"' in command
+    assert '--exit-status "${MONITOR_EXIT_STATUS}"' in command
+    # Scoped to the invocation that failed: `--unit` would mix in lines from
+    # the previous, healthy run.
+    assert "_SYSTEMD_INVOCATION_ID=${MONITOR_INVOCATION_ID}" in command
+    assert "--lines=60" in command
+    # systemd expands `$` in command lines itself, so command substitution has
+    # to reach /bin/sh as backticks to survive.
+    assert "$(" not in command
+    # A journal that cannot be read costs detail, never the alert itself.
+    assert "|| true" in command
+
+
+def test_alert_command_sends_the_failed_run_without_the_credential(tmp_path: Path) -> None:
+    """Run the unit's own command line, with podman and journalctl faked.
+
+    The alert is a single shell line built out of systemd specifiers, systemd
+    variables, backticks, and a redirect, and nothing else in the deployment
+    exercises it until something has already gone wrong at 04:00.
+    """
+
+    record = (
+        '{"level":"error","message":"health check","check":"gp:active",'
+        '"severity":"critical","detail":"41.2h old"}'
+    )
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    (binaries / "journalctl").write_text(
+        f"#!/bin/sh\ncase \"$*\" in\n  *_SYSTEMD_INVOCATION_ID=inv-1*) echo '{record}' ;;\n"
+        "  *) echo 'Failed to add match' >&2; exit 1 ;;\nesac\n",
+        encoding="utf-8",
+    )
+    (binaries / "podman").write_text(
+        '#!/bin/sh\nfor argument in "$@"; do printf \'%s\\n\' "$argument"; done > "$ARGV_FILE"\n'
+        'cat > "$STDIN_FILE"\n',
+        encoding="utf-8",
+    )
+    for name in ("journalctl", "podman"):
+        (binaries / name).chmod(0o755)
+    credentials = tmp_path / "credentials"
+    credentials.mkdir()
+    (credentials / "slack-webhook-url").write_text(
+        "https://hooks.slack.com/services/example\n", encoding="utf-8"
+    )
+    argv_file = tmp_path / "argv"
+    stdin_file = tmp_path / "stdin"
+
+    command = _unit("orbit-data-alert@.service", directory=SYSTEMD_UNITS)["Service"]["ExecStart"]
+    interpreter, options, script = shlex.split(command)
+    # Stand in for the specifier expansion and absolute path the manager gives
+    # this line; everything else runs exactly as deployed.
+    script = (
+        script.replace("%i", "orbit-data-check.service")
+        .replace("%H", "example-host")
+        .replace("/usr/bin/podman", str(binaries / "podman"))
+    )
+    environment = {
+        "PATH": f"{binaries}:{os.environ['PATH']}",
+        "CREDENTIALS_DIRECTORY": str(credentials),
+        "MONITOR_SERVICE_RESULT": "exit-code",
+        "MONITOR_EXIT_STATUS": "1",
+        "MONITOR_INVOCATION_ID": "inv-1",
+        "ARGV_FILE": str(argv_file),
+        "STDIN_FILE": str(stdin_file),
+    }
+    subprocess.run([interpreter, options, script], check=True, env=environment, capture_output=True)
+
+    argv = argv_file.read_text(encoding="utf-8").splitlines()
+    assert argv[argv.index("--unit") + 1] == "orbit-data-check.service"
+    assert argv[argv.index("--result") + 1] == "exit-code"
+    assert argv[argv.index("--exit-status") + 1] == "1"
+    assert argv[argv.index("--cause") + 1] == record
+    # The webhook reaches the container on stdin and nowhere else.
+    assert stdin_file.read_text(encoding="utf-8").strip() == (
+        "https://hooks.slack.com/services/example"
+    )
+    assert not [value for value in argv if "hooks.slack.com" in value or "credentials" in value]
+
+
+def test_alert_command_still_delivers_when_no_cause_can_be_read(tmp_path: Path) -> None:
+    """An unreadable journal, or a manager with no `$MONITOR_*`, degrades quietly."""
+
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    (binaries / "journalctl").write_text(
+        "#!/bin/sh\necho 'Failed to add match' >&2\nexit 1\n", encoding="utf-8"
+    )
+    (binaries / "podman").write_text(
+        '#!/bin/sh\nfor argument in "$@"; do printf \'%s\\n\' "$argument"; done > "$ARGV_FILE"\n'
+        "cat > /dev/null\n",
+        encoding="utf-8",
+    )
+    for name in ("journalctl", "podman"):
+        (binaries / name).chmod(0o755)
+    credentials = tmp_path / "credentials"
+    credentials.mkdir()
+    (credentials / "slack-webhook-url").write_text("https://example", encoding="utf-8")
+    argv_file = tmp_path / "argv"
+
+    command = _unit("orbit-data-alert@.service", directory=SYSTEMD_UNITS)["Service"]["ExecStart"]
+    interpreter, options, script = shlex.split(command)
+    script = (
+        script.replace("%i", "orbit-data-check.service")
+        .replace("%H", "example-host")
+        .replace("/usr/bin/podman", str(binaries / "podman"))
+    )
+    result = subprocess.run(
+        [interpreter, options, script],
+        check=False,
+        env={
+            "PATH": f"{binaries}:{os.environ['PATH']}",
+            "CREDENTIALS_DIRECTORY": str(credentials),
+            "ARGV_FILE": str(argv_file),
+        },
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    argv = argv_file.read_text(encoding="utf-8").splitlines()
+    assert argv[argv.index("--cause") + 1] == ""
+    assert argv[argv.index("--result") + 1] == ""
 
 
 def test_web_mount_preserves_release_symlink_targets() -> None:
