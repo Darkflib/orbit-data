@@ -243,20 +243,26 @@ every critical health check exits 1, so the alert unit also reads the journal of
 the failed invocation and the container reduces it to the records that explain
 the failure:
 
-```
+```text
 *Cause:*
 health check check=gp:active severity=critical detail=41.2h old; last error: HTTP 503
 health check check=storage severity=critical detail=384 MiB free
 ```
 
-Warnings are shown only when nothing failed at error level, and unstructured
-output is used when the application never got far enough to log — an image pull
-that cannot reach GHCR leaves only podman's own message, and that message is the
-whole story. The excerpt is scoped to the one failed invocation rather than to
-the unit, so the previous healthy run cannot leak into it, and it is passed to
-the container as a command argument: it is the service's own log output, and the
-credential keeps standard input to itself. On a manager without `$MONITOR_*` the
-alert still delivers, with those fields omitted.
+Warnings come next, because a run can fail on warnings alone: a GP dataset cut
+off at the daily byte budget counts as failed, and so exits the unit non-zero,
+while logging at warning level. Unstructured output is read by position. Before
+the application's first record it is podman's preamble, which on a `Pull=newer`
+start is routine progress — unless the pull never reached GHCR, in which case
+that message is the whole story and the only thing left to report. After the
+first record it means the application stopped logging through its own logger,
+so a traceback or a runtime kill is treated like an error record.
+
+The excerpt is scoped to the one failed invocation rather than to the unit, so
+the previous healthy run cannot leak into it, and it is passed to the container
+as a command argument: it is the service's own log output, and the credential
+keeps standard input to itself. On a manager without `$MONITOR_*` the alert
+still delivers, with those fields omitted.
 
 The alert unit and the application image upgrade independently: the unit passes
 arguments only a build carrying this change understands, and `--pull=never`

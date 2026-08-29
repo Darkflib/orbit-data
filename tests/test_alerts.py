@@ -160,6 +160,43 @@ def test_summarize_journal_falls_back_to_output_from_a_container_that_never_ran(
     )
 
 
+def test_summarize_journal_keeps_a_warning_that_pull_progress_would_have_buried() -> None:
+    """A GP dataset cut off at the byte budget fails the unit at warning level."""
+
+    text = "\n".join(
+        (
+            "Trying to pull ghcr.io/darkflib/orbit-data:latest...",
+            "Getting image source signatures",
+            "Copying blob sha256:abc",
+            '{"level":"warning","message":"GP dataset aborted at the daily byte budget",'
+            '"dataset":"active","error":"daily byte budget exhausted after 104857600 bytes"}',
+        )
+    )
+
+    assert summarize_journal(text) == (
+        "GP dataset aborted at the daily byte budget dataset=active "
+        "error=daily byte budget exhausted after 104857600 bytes",
+    )
+
+
+def test_summarize_journal_treats_output_after_the_first_record_as_a_failure() -> None:
+    """Once the application has logged, unstructured output is it coming apart."""
+
+    text = "\n".join(
+        (
+            "Trying to pull ghcr.io/darkflib/orbit-data:latest...",
+            '{"level":"info","message":"health check","check":"storage","severity":"ok"}',
+            "Traceback (most recent call last):",
+            "MemoryError",
+        )
+    )
+
+    assert summarize_journal(text) == (
+        "Traceback (most recent call last):",
+        "MemoryError",
+    )
+
+
 def test_summarize_journal_reports_warnings_only_when_nothing_failed() -> None:
     text = _record("warning", "gp-run", "warning", "daily byte budget spent")
 

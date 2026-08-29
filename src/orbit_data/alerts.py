@@ -86,29 +86,38 @@ class Alert:
 def summarize_journal(text: str, *, limit: int = _CAUSE_LINES) -> tuple[str, ...]:
     """Reduce a failed unit's journal output to the lines that explain it.
 
-    Every job here logs one JSON object per line, so a failing run is a few
-    error records among the routine ones — for the health check, exactly the
-    checks that reached critical. Those are preferred over everything else.
+    Every job here logs one JSON object per line, so a failing run is usually a
+    few error records among the routine ones — for the health check, exactly
+    the checks that reached critical.
 
-    Unstructured output is the fallback because it means the application never
-    got far enough to log: an image pull that could not reach GHCR leaves only
-    podman's own message, and that message is the whole story. It cannot be
-    preferred over the JSON records, because `Pull=newer` writes routine
-    progress lines to the same journal on every successful pull.
+    Warnings come next, and they must outrank podman's own output rather than
+    the other way around: a GP dataset cut off at the daily byte budget counts
+    as failed, and so exits the unit non-zero, while logging at warning level.
+    A run that fails on warnings alone is not a hypothetical.
+
+    What unstructured output means depends on where it falls. Before the
+    application's first record it is podman's preamble — pull progress on a
+    `Pull=newer` start, and, if the pull never reached GHCR, the message that
+    is then the whole story. After that first record the application has
+    stopped logging through its own logger, which means a traceback or a
+    runtime kill, and that explains the failure as surely as an error record
+    does.
     """
 
     failures: list[str] = []
-    unstructured: list[str] = []
     warnings: list[str] = []
+    preamble: list[str] = []
     routine: list[str] = []
+    logging_started = False
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
         document = _json_object(line)
         if document is None:
-            unstructured.append(_clip(line))
+            (failures if logging_started else preamble).append(_clip(line))
             continue
+        logging_started = True
         level = str(document.get("level", "")).lower()
         rendered = _describe_record(document)
         if level in _FAILURE_LEVELS:
@@ -117,7 +126,7 @@ def summarize_journal(text: str, *, limit: int = _CAUSE_LINES) -> tuple[str, ...
             warnings.append(rendered)
         else:
             routine.append(rendered)
-    selected = failures or unstructured or warnings or routine
+    selected = failures or warnings or preamble or routine
     return tuple(selected[-limit:])
 
 
