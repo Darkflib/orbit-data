@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from orbit_data import __version__
-from orbit_data.alerts import Alert, cli_send_slack_alert
+from orbit_data.alerts import Alert, cli_send_slack_alert, summarize_journal
 from orbit_data.catalog import CatalogUpdater
 from orbit_data.config import ConfigError, load_config
 from orbit_data.gp import GpUpdater
@@ -38,6 +38,16 @@ def _parser() -> argparse.ArgumentParser:
     alert.add_argument("--severity", default="critical", choices=("warning", "critical"))
     alert.add_argument("--unit", required=True)
     alert.add_argument("--host", required=True)
+    # systemd hands the triggered unit $MONITOR_SERVICE_RESULT and
+    # $MONITOR_EXIT_STATUS; both are optional here so a hand-run alert, or one
+    # from a manager predating them, still delivers.
+    alert.add_argument("--result", default="", help="systemd result, e.g. exit-code or oom-kill")
+    alert.add_argument("--exit-status", default="", help="exit status or signal name")
+    alert.add_argument(
+        "--cause",
+        default="",
+        help="journal output from the failed invocation, summarized into the alert",
+    )
     credential = alert.add_mutually_exclusive_group(required=True)
     credential.add_argument("--webhook-file", type=Path)
     credential.add_argument("--webhook-stdin", action="store_true")
@@ -60,6 +70,9 @@ def run(  # pylint: disable=too-many-return-statements
                 unit=args.unit,
                 host=args.host,
                 occurred_at=datetime.now(tz=UTC),
+                result=args.result.strip(),
+                exit_status=args.exit_status.strip(),
+                cause=summarize_journal(args.cause),
             ),
             webhook_file=args.webhook_file,
         )
