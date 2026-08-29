@@ -183,9 +183,11 @@ def test_alert_command_sends_the_failed_run_without_the_credential(tmp_path: Pat
         (binaries / name).chmod(0o755)
     credentials = tmp_path / "credentials"
     credentials.mkdir()
-    (credentials / "slack-webhook-url").write_text(
-        "https://hooks.slack.com/services/example\n", encoding="utf-8"
-    )
+    # A sentinel rather than a webhook URL: podman is faked here, so the value
+    # never reaches Slack and only has to be distinctive enough to prove where
+    # the credential did and did not travel.
+    secret = "credential-value-that-must-not-reach-the-command-line"
+    (credentials / "slack-webhook-url").write_text(f"{secret}\n", encoding="utf-8")
     argv_file = tmp_path / "argv"
     stdin_file = tmp_path / "stdin"
 
@@ -214,11 +216,9 @@ def test_alert_command_sends_the_failed_run_without_the_credential(tmp_path: Pat
     assert argv[argv.index("--result") + 1] == "exit-code"
     assert argv[argv.index("--exit-status") + 1] == "1"
     assert argv[argv.index("--cause") + 1] == record
-    # The webhook reaches the container on stdin and nowhere else.
-    assert stdin_file.read_text(encoding="utf-8").strip() == (
-        "https://hooks.slack.com/services/example"
-    )
-    assert not [value for value in argv if "hooks.slack.com" in value or "credentials" in value]
+    # The credential reaches the container on stdin and nowhere else.
+    assert stdin_file.read_text(encoding="utf-8").strip() == secret
+    assert not [value for value in argv if secret in value or "credentials" in value]
 
 
 def test_alert_command_still_delivers_when_no_cause_can_be_read(tmp_path: Path) -> None:
