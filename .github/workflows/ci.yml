@@ -85,8 +85,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # cosign keyless: hosts refuse unsigned images (wwff-tech/gitops policy)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
       - name: Build and publish
@@ -97,5 +99,10 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           printf '%s' "$GHCR_TOKEN" | podman login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           podman build --tag "$image:sha-${GITHUB_SHA}" --tag "$image:latest" .
-          podman push "$image:sha-${GITHUB_SHA}"
+          # The digest the registry stored is what gets signed and pinned.
+          podman push --digestfile digest "$image:sha-${GITHUB_SHA}"
           podman push "$image:latest"
+          digest="$(cat digest)"
+          printf '%s' "$GHCR_TOKEN" | cosign login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          cosign sign --yes "$image@${digest}"
+          echo "Signed: \`$image:sha-${GITHUB_SHA}@${digest}\`" >> "$GITHUB_STEP_SUMMARY"
