@@ -44,7 +44,11 @@ def test_updaters_share_writable_failover_volume_and_are_oneshot() -> None:
 def test_gp_timer_cannot_undercut_persisted_request_floor() -> None:
     timer = _unit("orbit-data-gp.timer", directory=SYSTEMD_UNITS)["Timer"]
 
-    assert "OnBootSec" not in timer
+    # OnUnitInactiveSec alone never fires after a reboot (the service hasn't run in
+    # this boot), so OnBootSec anchors the first run. It can't undercut the floor:
+    # sync-gp checks the persisted retry_after before going near the network and
+    # skips a dataset that isn't due.
+    assert timer["OnBootSec"] == "10min"
     assert timer["OnUnitInactiveSec"] == "6h"
     assert timer["RandomizedDelaySec"] == "15m"
     assert timer["AccuracySec"] == "1m"
