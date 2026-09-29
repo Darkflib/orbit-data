@@ -8,6 +8,11 @@ Description=Schedule Orbit CelesTrak OMM refreshes
 # 100 MB/day firewall threshold. Six hours stays ahead of the real update rate
 # while cutting the daily pull by roughly two thirds.
 OnUnitInactiveSec=6h
+# OnUnitInactiveSec counts from the service's last run *in this boot*. After a
+# reboot the service hasn't run, so on its own the timer never fires again
+# (NEXT shows "-"). This anchors the first run after boot; the 6h cadence
+# takes over from there.
+OnBootSec=10min
 RandomizedDelaySec=15m
 AccuracySec=1m
 Unit=orbit-data-gp.service
