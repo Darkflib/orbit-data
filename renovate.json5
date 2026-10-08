@@ -80,18 +80,18 @@
 
   customManagers: [
     {
-      // Quadlet .container files are not a format Renovate knows, so the
-      // version-pinned Caddy image would otherwise never be flagged.
+      // The units live in wwff-tech/gitops, so the only Caddy reference left
+      // here is the one CI runs to validate and smoke-test deploy/Caddyfile.
+      // It sits inside a `run:` script, which is just text to the
+      // github-actions manager, so it would otherwise never be flagged.
       //
-      // The `docker.io/` anchor is load-bearing, not incidental: these same
-      // files carry `Image=ghcr.io/darkflib/orbit-data:latest`, which is this
-      // project's own floating tag and must never be rewritten by a bot. A
-      // looser pattern would match it and start proposing digest pins for our
-      // own builds.
+      // The `docker.io/` anchor is load-bearing, not incidental: the same
+      // workflow names `ghcr.io/…/orbit-data`, this project's own image,
+      // which must never be rewritten by a bot.
       customType: "regex",
-      managerFilePatterns: ["/^deploy/quadlet/.*\\.container$/"],
+      managerFilePatterns: ["/^\\.github/workflows/.*\\.ya?ml$/"],
       matchStrings: [
-        "Image=(?<depName>docker\\.io/[^:\\s]+):(?<currentValue>[^\\s]+)",
+        "(?<depName>docker\\.io/[^:\\s]+):(?<currentValue>[^\\s@]+)",
       ],
       datasourceTemplate: "docker",
     },

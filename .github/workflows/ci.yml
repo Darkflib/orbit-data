@@ -73,10 +73,6 @@ jobs:
             sleep 1
           done
           curl --fail --silent "http://127.0.0.1:${port}/v1/data/manifest.json"
-      - name: Validate Quadlet generation
-        run: |
-          QUADLET_UNIT_DIRS="$PWD/deploy/quadlet" \
-            /usr/lib/systemd/system-generators/podman-system-generator --dryrun
 
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -86,12 +82,16 @@ jobs:
       contents: read
       packages: write
       id-token: write # cosign keyless: hosts refuse unsigned images (wwff-tech/gitops policy)
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+      tag: ${{ steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
       - name: Build and publish
+        id: publish
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -105,4 +105,57 @@ jobs:
           digest="$(cat digest)"
           printf '%s' "$GHCR_TOKEN" | cosign login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           cosign sign --yes "$image@${digest}"
-          echo "Signed: \`$image:sha-${GITHUB_SHA}@${digest}\`" >> "$GITHUB_STEP_SUMMARY"
+          { echo "image=$image"; echo "tag=sha-${GITHUB_SHA}"; } >> "$GITHUB_OUTPUT"
+          echo "Signed: \`$image:sha-${GITHUB_SHA}@${digest}\`. Promoted by the next job; by hand, from a wwff-tech/gitops checkout: \`python3 quadlet/bin/promote.py orbit $image sha-${GITHUB_SHA} --pr\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Opens the pin as a PR in wwff-tech/gitops and merges it once that repository's checks pass.
+  # Nothing here touches a host: each host's reconcile agent pulls the merged pin and verifies
+  # the signature again before running anything.
+  #
+  # Secrets:
+  #   GITOPS_TOKEN  contents:write + pull-requests:write on wwff-tech/gitops
+  promote:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # promote.py waits up to 8 for the PR's checks
+    permissions:
+      contents: read
+      packages: read # promote.py reads the manifest and its signature
+    env:
+      IMAGE: ${{ needs.publish.outputs.image }}
+      TAG: ${{ needs.publish.outputs.tag }}
+    steps:
+      - name: Require GITOPS_TOKEN
+        # Without this the failure is actions/checkout complaining about an empty token.
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+        run: |
+          if [ -z "$GITOPS_TOKEN" ]; then
+            echo "::error::GITOPS_TOKEN is not set on this repository, so $IMAGE:$TAG is published and signed but not promoted. Add the secret (contents:write and pull-requests:write on wwff-tech/gitops) and re-run this job, or promote by hand from a gitops checkout: python3 quadlet/bin/promote.py orbit $IMAGE $TAG --pr"
+            exit 1
+          fi
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Log in to GHCR for cosign
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: printf '%s' "$REGISTRY_TOKEN" | cosign login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Check out gitops
+        # Credentials persist on purpose: promote.py pushes the promote branch with them.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: wwff-tech/gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+      - name: Promote
+        # Verifies the signature against policy.toml, pins the digest and opens a PR, and merges
+        # it once its checks pass.
+        # Does nothing if this digest is already pinned.
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GHCR_TOKEN: ${{ github.token }}
+        working-directory: gitops
+        run: |
+          git config user.name "orbit-publish"
+          git config user.email "orbit-publish@users.noreply.github.com"
+          python3 quadlet/bin/promote.py orbit "$IMAGE" "$TAG" --pr
