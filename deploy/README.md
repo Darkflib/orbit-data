@@ -21,8 +21,13 @@ What is left here:
 | Failure alerts | `OnFailure=gitops-alert@%n.service` (`quadlet/bin/alert.py`) |
 
 A push to `main` publishes `ghcr.io/darkflib/orbit-data:sha-<commit>` and signs it with cosign
-(keyless). Promotion is not automatic from this repository: there is no promote job in the
-workflow, so pin a build from a gitops checkout, which opens the PR:
+(keyless). The workflow's `promote` job then opens the pin as a PR in wwff-tech/gitops and
+merges it once that repository's checks pass; hosts pick it up on their next reconcile. It
+needs the `GITOPS_TOKEN` secret (contents and pull-requests write on wwff-tech/gitops) and
+fails saying so without it.
+
+To promote by hand (the fallback if that job fails, and how to roll back to an older commit),
+from a gitops checkout:
 
 ```bash
 python3 quadlet/bin/promote.py orbit ghcr.io/darkflib/orbit-data sha-<commit> --pr
