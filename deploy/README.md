@@ -125,9 +125,7 @@ cap — the shared allowance is not the problem there, and the run is not marked
 
 Warnings are logged and exit zero. A critical failure in the GP, catalogue, or health-check
 unit starts gitops' `gitops-alert@.service`, which sends the failed run's last journal lines to
-the notification hub. The image still carries `orbit-data alert-slack`, which the unit that
-used to live here ran to reduce that journal to the failing check records before posting to
-Slack; nothing calls it under gitops.
+the notification hub.
 
 Thresholds live in the optional `[health]` table of `/etc/orbit-data.toml`
 (18h/36h for GP, 36h/72h for the catalogue, 2 GiB/512 MiB free). The GP
