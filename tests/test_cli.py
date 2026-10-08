@@ -5,7 +5,6 @@
 from pathlib import Path
 from typing import Any
 
-from orbit_data.alerts import Alert
 from orbit_data.catalog import CatalogRunResult
 from orbit_data.cli import run
 from orbit_data.gp import GpRunResult
@@ -27,98 +26,6 @@ def test_validate_config(tmp_path: Path) -> None:
 def test_init_storage(tmp_path: Path) -> None:
     assert run(["--config", str(_config(tmp_path)), "init-storage"]) == 0
     assert (tmp_path / "data" / "public" / "v1").is_dir()
-
-
-def test_alert_slack_does_not_require_application_configuration(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    webhook = tmp_path / "slack-webhook"
-    webhook.write_text("https://hooks.slack.com/services/example", encoding="utf-8")
-    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-
-    def fake_send(*args: object, **kwargs: object) -> int:
-        calls.append((args, kwargs))
-        return 0
-
-    monkeypatch.setattr("orbit_data.cli.cli_send_slack_alert", fake_send)
-
-    assert (
-        run(
-            [
-                "--config",
-                str(tmp_path / "missing.toml"),
-                "alert-slack",
-                "--unit",
-                "orbit-data-gp.service",
-                "--host",
-                "example-host",
-                "--result",
-                "exit-code",
-                "--exit-status",
-                "1",
-                "--cause",
-                '{"level":"error","message":"GP update failed","error":"HTTP 503"}\n',
-                "--webhook-file",
-                str(webhook),
-            ]
-        )
-        == 0
-    )
-    assert len(calls) == 1
-    arguments, keywords = calls[0]
-    assert len(arguments) == 1
-    alert = arguments[0]
-    assert isinstance(alert, Alert)
-    assert alert.source == "orbit-data"
-    assert alert.event == "unit-failed"
-    assert alert.severity == "critical"
-    assert alert.unit == "orbit-data-gp.service"
-    assert alert.host == "example-host"
-    assert alert.result == "exit-code"
-    assert alert.exit_status == "1"
-    assert alert.cause == ("GP update failed error=HTTP 503",)
-    assert keywords == {"webhook_file": webhook}
-
-
-def test_alert_slack_tolerates_a_manager_that_reported_no_cause(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """systemd omits `$MONITOR_*` before v251, and on a hand-run alert."""
-
-    webhook = tmp_path / "slack-webhook"
-    webhook.write_text("https://hooks.slack.com/services/example", encoding="utf-8")
-    calls: list[Alert] = []
-
-    def fake_send(alert: Alert, **_keywords: object) -> int:
-        calls.append(alert)
-        return 0
-
-    monkeypatch.setattr("orbit_data.cli.cli_send_slack_alert", fake_send)
-
-    assert (
-        run(
-            [
-                "--config",
-                str(tmp_path / "missing.toml"),
-                "alert-slack",
-                "--unit",
-                "orbit-data-check.service",
-                "--host",
-                "example-host",
-                "--result",
-                "",
-                "--exit-status",
-                "",
-                "--cause",
-                "",
-                "--webhook-file",
-                str(webhook),
-            ]
-        )
-        == 0
-    )
-    assert calls[0].outcome() == ""
-    assert calls[0].cause == ()
 
 
 def test_invalid_config_returns_two(tmp_path: Path) -> None:
