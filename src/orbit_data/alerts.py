@@ -42,7 +42,7 @@ class Alert:
     occurred_at: datetime
     # systemd's own verdict, from $MONITOR_SERVICE_RESULT and
     # $MONITOR_EXIT_STATUS. Empty when the manager did not supply it, which is
-    # the case on a manual `systemctl start orbit-data-alert@…` and on systemd
+    # the case when the alert unit is started by hand and on systemd
     # older than v251.
     result: str = ""
     exit_status: str = ""

@@ -73,10 +73,6 @@ jobs:
             sleep 1
           done
           curl --fail --silent "http://127.0.0.1:${port}/v1/data/manifest.json"
-      - name: Validate Quadlet generation
-        run: |
-          QUADLET_UNIT_DIRS="$PWD/deploy/quadlet" \
-            /usr/lib/systemd/system-generators/podman-system-generator --dryrun
 
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

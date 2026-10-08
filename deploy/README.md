@@ -1,12 +1,37 @@
-# Linux deployment
+# deploy/
 
-The reference deployment uses system (rootful) Quadlets. The application still
-runs as UID/GID `10001`, Caddy runs as UID/GID `65532`, both images have
-read-only root filesystems, and Caddy only binds to loopback. Rootful Podman is
-intentional here: numeric ownership of a bind-mounted network filesystem is
-predictable across failover hosts without subordinate-ID mappings.
+Deployment is wwff-tech/gitops, `quadlet/apps/orbit/`: the Quadlet units, the timers, the
+Caddyfile and front page that hosts install, the nginx vhost, and the image pin all live there
+and nowhere else. Nothing in this repository touches a host.
 
-## Host preparation
+What is left here:
+
+| File | What | Status |
+| --- | --- | --- |
+| `Caddyfile` | The static server's configuration. CI validates it and smoke-tests a read-only Caddy against it; `tests/test_deployment.py` holds its contract. | A second copy: hosts install gitops' `files/Caddyfile`, which was byte-identical when the units were removed from here. Change both together. |
+| `orbit-egress.nft` | nftables SNAT fragment that sends the updaters' traffic out through a secondary address. | No gitops equivalent, and not in use: gitops' `app.toml` records that the fixed-egress SNAT was not carried over. |
+
+| Concern | In wwff-tech/gitops |
+| --- | --- |
+| Units, network, timers | `quadlet/apps/orbit/units/` |
+| Caddyfile, front page (`index.html`, `site.css`, `favicon.svg`) | `quadlet/apps/orbit/files/` |
+| nginx vhost and TLS | `quadlet/apps/orbit/files/nginx.conf`, `certs/certs.toml` |
+| Installing, enabling timers, restarting | `quadlet/bin/reconcile.py` on the host |
+| Image pin and signature check | `quadlet/bin/promote.py` against `quadlet/policy.toml`; the units pin a digest with `Pull=missing` |
+| Failure alerts | `OnFailure=gitops-alert@%n.service` (`quadlet/bin/alert.py`) |
+
+A push to `main` publishes `ghcr.io/darkflib/orbit-data:sha-<commit>` and signs it with cosign
+(keyless). Promotion is not automatic from this repository: there is no promote job in the
+workflow, so pin a build from a gitops checkout, which opens the PR:
+
+```bash
+python3 quadlet/bin/promote.py orbit ghcr.io/darkflib/orbit-data sha-<commit> --pr
+```
+
+The rest of this file is what an operator needs to know about the service itself, whichever
+units run it.
+
+## The data volume
 
 The network volume must be mounted at `/srv/orbit-data` on every candidate host.
 Create its root once with ownership `10001:10001` and mode `0755`. All hosts
@@ -18,135 +43,14 @@ atomic same-filesystem rename, durable `fsync`, and advisory locks across hosts.
 NFSv4 with locking enabled is a typical fit; verify those semantics for the
 actual storage product before relying on automatic overlap protection.
 
-Install the Quadlet sources, native systemd timers, Caddy configuration, and
-the small static front page served at `/`. The installer is idempotent and
-removes obsolete timer files from the Quadlet source path. By default it only
-installs files and reloads systemd:
-
-```bash
-sudo deploy/install.sh
-```
-
-Use `sudo deploy/install.sh --start` to also enable both updater timers and
-restart the static web service. The tracked Caddyfile and front-page files are
-replaced on each run; keep intentional changes in the repository rather than
-editing the installed copies.
-
-Ensure the GHCR package is public, or log the rootful Podman service account in
-with a read-only package credential before starting the updater units. Confirm
-both images are available with:
-
-```bash
-podman pull ghcr.io/darkflib/orbit-data:latest
-podman pull docker.io/library/caddy:2.11.4-alpine
-```
-
-Quadlet requires cgroup v2. Check the generated units before enabling them:
-
-```bash
-podman info --format '{{.Host.CgroupsVersion}}'
-QUADLET_UNIT_DIRS=/etc/containers/systemd \
-  /usr/lib/systemd/system-generators/podman-system-generator --dryrun
-```
-
 On SELinux hosts, configure the network mount for container access according to
 the filesystem driver and distribution policy. Do not append `:Z` to a shared
 NFS/CIFS mount: relabelling a shared tree can affect other hosts, and NFS commonly
 cannot store SELinux labels.
 
-### Optional secondary outbound IP
+## Schedule
 
-The `orbit-egress.network` Quadlet gives the updater containers a predictable
-bridge subnet, but it does not select a host source address by itself. Without
-an additional host firewall rule, traffic from that subnet uses the host's
-normal outbound address.
-
-To send updater traffic through a secondary IP, first configure that address on
-the host's external interface using the distribution's persistent network
-configuration. The address must be present after reboot and the upstream
-network must route it to the host. Identify the external interface and confirm
-the address before changing nftables, for example:
-
-```bash
-ip route get 1.1.1.1
-ip -brief address show dev ens3
-```
-
-Then install the supplied nftables fragment and edit it for the host:
-
-```bash
-sudo install -d -m 0755 /etc/nftables.d
-sudo install -m 0644 deploy/orbit-egress.nft /etc/nftables.d/orbit-egress.nft
-sudoedit /etc/nftables.d/orbit-egress.nft
-```
-
-Replace `oifname "ens3"` with the external interface and replace the address
-after `snat to` with the secondary IP. The `ip saddr` subnet must match
-`Subnet` in `deploy/quadlet/orbit-egress.network`; change both together if the
-default `10.89.60.0/24` conflicts with an existing network.
-
-Make the rule persistent by including the fragment once from the host's main
-nftables configuration, normally `/etc/nftables.conf`:
-
-```nftables
-include "/etc/nftables.d/orbit-egress.nft"
-```
-
-Validate the complete ruleset, then enable and reload it using the host's
-normal nftables procedure. On a systemd host where `nftables.service` owns
-`/etc/nftables.conf`, that is typically:
-
-```bash
-sudo nft --check --file /etc/nftables.conf
-sudo systemctl enable nftables.service
-sudo systemctl restart nftables.service
-sudo nft list table ip orbit_egress
-```
-
-Review the host firewall configuration before restarting it, because loading
-the main ruleset can replace active rules. If firewalld or another firewall
-manager owns nftables, add the equivalent SNAT rule through that manager rather
-than enabling a competing `nftables.service`.
-
-Activate and verify this rule before running `deploy/install.sh --start`. After
-an updater has made a request, the counter in the `postrouting` chain should
-increase and the remote service should observe the secondary IP:
-
-```bash
-sudo nft list chain ip orbit_egress postrouting
-```
-
-Repeat the secondary-address and firewall setup on every failover host that
-must provide the same outbound identity. This nftables integration is optional;
-hosts that should use their normal outbound address do not need it.
-
-## First start
-
-Install and start the scheduled services, then initialize and populate the
-volume before exposing it:
-
-```bash
-sudo deploy/install.sh --start
-systemctl start orbit-data-gp.service
-systemctl start orbit-data-catalog.service
-curl --fail http://127.0.0.1:8080/healthz
-curl --fail http://127.0.0.1:8080/v1/status/gp.json
-curl --fail http://127.0.0.1:8080/v1/status/catalog.json
-```
-
-Run the population commands promptly. `--start` also enables the hourly health
-check, which reports an empty tree as critical; because a newly enabled timer
-has no stamp file, the first check lands on the next hour boundary rather than
-immediately.
-
-Quadlet services are transient generated units and cannot be enabled with
-`systemctl enable`. The web Quadlet's `[Install]` section is applied by the
-generator during boot and `daemon-reload`, so starting it explicitly is enough
-for the initial deployment. The timers are native persistent systemd units and
-are enabled normally.
-
-The explicit first-start commands own the initial refresh. The GP timer then
-waits 6 hours after each completed run, with up to 15 minutes of jitter. That is
+The GP timer waits 6 hours after each completed run, with up to 15 minutes of jitter. That is
 far above the service's persisted 2-hour-5-minute request floor, deliberately:
 the underlying 18 SDS GP data only updates 2-3 times a day, so polling at the
 floor re-downloaded identical bytes and pushed this host past CelesTrak's
@@ -214,62 +118,11 @@ cap — the shared allowance is not the problem there, and the run is not marked
 `budget_exhausted` for it. Both are visible immediately in
 `journalctl -u orbit-data-gp.service -p warning`.
 
-Warnings are logged and exit zero. A critical failure in the GP, catalogue, or
-health-check unit starts `orbit-data-alert@.service`. Configure its Slack
-incoming webhook to receive those alerts:
-
-```bash
-sudo install -d -m 0700 /etc/orbit-data/credentials
-sudoedit /etc/orbit-data/credentials/slack-webhook-url
-sudo chmod 0600 /etc/orbit-data/credentials/slack-webhook-url
-sudo deploy/install.sh
-```
-
-The credential file contains only the Slack webhook URL, with no trailing
-comment or other text. It is supplied to the alert container on standard input,
-not as an environment variable or a Podman mount, so it is absent from command
-lines and container inspection output. The alert includes the failing unit,
-host, severity, event, and a `journalctl` command for investigation. It does
-not retry delivery automatically: retrying an ambiguous Slack request can send
-duplicate pages, while a failed `orbit-data-alert@…` unit remains visible to
-the operator. If the credential is absent, the alert unit is skipped and the
-original failure remains in its journal.
-
-It also reports why the unit failed. systemd's own verdict —
-`$MONITOR_SERVICE_RESULT` and `$MONITOR_EXIT_STATUS`, which need systemd 251 or
-newer — arrives as `Result: exit-code (status 1)`, separating a critical check
-from an out-of-memory kill or a timeout. That is not enough on its own, because
-every critical health check exits 1, so the alert unit also reads the journal of
-the failed invocation and the container reduces it to the records that explain
-the failure:
-
-```text
-*Cause:*
-health check check=gp:active severity=critical detail=41.2h old; last error: HTTP 503
-health check check=storage severity=critical detail=384 MiB free
-```
-
-Warnings come next, because a run can fail on warnings alone: a GP dataset cut
-off at the daily byte budget counts as failed, and so exits the unit non-zero,
-while logging at warning level. Unstructured output is read by position. Before
-the application's first record it is podman's preamble, which on a `Pull=newer`
-start is routine progress — unless the pull never reached GHCR, in which case
-that message is the whole story and the only thing left to report. After the
-first record it means the application stopped logging through its own logger,
-so a traceback or a runtime kill is treated like an error record.
-
-The excerpt is scoped to the one failed invocation rather than to the unit, so
-the previous healthy run cannot leak into it, and it is passed to the container
-as a command argument: it is the service's own log output, and the credential
-keeps standard input to itself. On a manager without `$MONITOR_*` the alert
-still delivers, with those fields omitted.
-
-The alert unit and the application image upgrade independently: the unit passes
-arguments only a build carrying this change understands, and `--pull=never`
-means it uses whatever `:latest` is already on the host. Installing the units
-ahead of the image leaves `orbit-data-alert@…` failing visibly — with the
-original failure still in its own journal — until the next `Pull=newer` start
-refreshes the image.
+Warnings are logged and exit zero. A critical failure in the GP, catalogue, or health-check
+unit starts gitops' `gitops-alert@.service`, which sends the failed run's last journal lines to
+the notification hub. The image still carries `orbit-data alert-slack`, which the unit that
+used to live here ran to reduce that journal to the failing check records before posting to
+Slack; nothing calls it under gitops.
 
 Thresholds live in the optional `[health]` table of `/etc/orbit-data.toml`
 (18h/36h for GP, 36h/72h for the catalogue, 2 GiB/512 MiB free). The GP
@@ -281,16 +134,7 @@ than refusing to start — a monitor that fails closed on its own configuration
 goes quiet exactly when it is needed.
 
 The check container mounts the volume read-only, so a monitor can never repair,
-rotate, or truncate the tree it is judging. It uses `Pull=newer`, the same
-policy as the updaters, so it never runs a different build of the code it is
-monitoring. If GHCR is unreachable the unit may fail, which reaches `OnFailure=`
-as an alert — the correct direction to fail, because an alert naming the
-registry is recoverable information whereas a monitor frozen on a stale image
-reports "healthy" for data it cannot actually evaluate.
-
-`Pull=missing` is only appropriate against a version-pinned tag, as on the web
-container. Pairing it with a floating tag like `:latest` pins the unit to
-whatever image happens to be cached on that host.
+rotate, or truncate the tree it is judging.
 
 ## Operations and failover
 
@@ -316,9 +160,63 @@ If the old host cannot be stopped, cross-host volume locks still prevent
 concurrent writers when supported, but traffic should not be switched until the
 replacement health and status endpoints are good.
 
-The updater Quadlets use `Pull=newer`, so each scheduled start checks GHCR for a
-newer application image. If GHCR is temporarily unavailable, an updater start
-can fail while the static server continues serving its last-known-good files;
-the next timer activation retries. Caddy is version-pinned and uses
-`Pull=missing`, so a web restart uses the local image without depending on
-Docker Hub. Pull a newly pinned Caddy image deliberately during an upgrade.
+## Optional secondary outbound IP
+
+Not in use (see the table above); kept until it is either moved into gitops or dropped.
+
+`orbit-egress.network` gives the updater containers a predictable bridge subnet, but it does
+not select a host source address by itself. Without an additional host firewall rule, traffic
+from that subnet uses the host's normal outbound address.
+
+To send updater traffic through a secondary IP, first configure that address on
+the host's external interface using the distribution's persistent network
+configuration. The address must be present after reboot and the upstream
+network must route it to the host. Identify the external interface and confirm
+the address before changing nftables, for example:
+
+```bash
+ip route get 1.1.1.1
+ip -brief address show dev ens3
+```
+
+Then install the supplied nftables fragment and edit it for the host:
+
+```bash
+sudo install -d -m 0755 /etc/nftables.d
+sudo install -m 0644 deploy/orbit-egress.nft /etc/nftables.d/orbit-egress.nft
+sudoedit /etc/nftables.d/orbit-egress.nft
+```
+
+Replace `oifname "ens3"` with the external interface and replace the address
+after `snat to` with the secondary IP. The `ip saddr` subnet must match
+`Subnet` in gitops' `units/orbit-egress.network` (`10.89.60.0/24`).
+
+Make the rule persistent by including the fragment once from the host's main
+nftables configuration, normally `/etc/nftables.conf`:
+
+```nftables
+include "/etc/nftables.d/orbit-egress.nft"
+```
+
+Validate the complete ruleset, then enable and reload it using the host's
+normal nftables procedure. On a systemd host where `nftables.service` owns
+`/etc/nftables.conf`, that is typically:
+
+```bash
+sudo nft --check --file /etc/nftables.conf
+sudo systemctl enable nftables.service
+sudo systemctl restart nftables.service
+sudo nft list table ip orbit_egress
+```
+
+Review the host firewall configuration before restarting it, because loading
+the main ruleset can replace active rules. If firewalld or another firewall
+manager owns nftables, add the equivalent SNAT rule through that manager rather
+than enabling a competing `nftables.service`.
+
+After an updater has made a request, the counter in the `postrouting` chain should increase
+and the remote service should observe the secondary IP:
+
+```bash
+sudo nft list chain ip orbit_egress postrouting
+```
