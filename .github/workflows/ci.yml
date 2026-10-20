@@ -81,7 +81,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write # cosign keyless: hosts refuse unsigned images (wwff-tech/gitops policy)
+      id-token: write # cosign keyless: hosts refuse unsigned images (Darkflib/gitops policy)
     outputs:
       image: ${{ steps.publish.outputs.image }}
       tag: ${{ steps.publish.outputs.tag }}
@@ -106,14 +106,14 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | cosign login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           cosign sign --yes "$image@${digest}"
           { echo "image=$image"; echo "tag=sha-${GITHUB_SHA}"; } >> "$GITHUB_OUTPUT"
-          echo "Signed: \`$image:sha-${GITHUB_SHA}@${digest}\`. Promoted by the next job; by hand, from a wwff-tech/gitops checkout: \`python3 quadlet/bin/promote.py orbit $image sha-${GITHUB_SHA} --pr\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Signed: \`$image:sha-${GITHUB_SHA}@${digest}\`. Promoted by the next job; by hand, from a Darkflib/gitops checkout: \`python3 quadlet/bin/promote.py orbit $image sha-${GITHUB_SHA} --pr\`" >> "$GITHUB_STEP_SUMMARY"
 
-  # Opens the pin as a PR in wwff-tech/gitops and merges it once that repository's checks pass.
+  # Opens the pin as a PR in Darkflib/gitops and merges it once that repository's checks pass.
   # Nothing here touches a host: each host's reconcile agent pulls the merged pin and verifies
   # the signature again before running anything.
   #
   # Secrets:
-  #   GITOPS_TOKEN  contents:write + pull-requests:write on wwff-tech/gitops
+  #   GITOPS_TOKEN  contents:write + pull-requests:write on Darkflib/gitops
   promote:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: publish
@@ -132,7 +132,7 @@ jobs:
           GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
         run: |
           if [ -z "$GITOPS_TOKEN" ]; then
-            echo "::error::GITOPS_TOKEN is not set on this repository, so $IMAGE:$TAG is published and signed but not promoted. Add the secret (contents:write and pull-requests:write on wwff-tech/gitops) and re-run this job, or promote by hand from a gitops checkout: python3 quadlet/bin/promote.py orbit $IMAGE $TAG --pr"
+            echo "::error::GITOPS_TOKEN is not set on this repository, so $IMAGE:$TAG is published and signed but not promoted. Add the secret (contents:write and pull-requests:write on Darkflib/gitops) and re-run this job, or promote by hand from a gitops checkout: python3 quadlet/bin/promote.py orbit $IMAGE $TAG --pr"
             exit 1
           fi
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -144,7 +144,7 @@ jobs:
         # Credentials persist on purpose: promote.py pushes the promote branch with them.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: wwff-tech/gitops
+          repository: Darkflib/gitops
           token: ${{ secrets.GITOPS_TOKEN }}
           path: gitops
       - name: Promote

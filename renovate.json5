@@ -80,7 +80,7 @@
 
   customManagers: [
     {
-      // The units live in wwff-tech/gitops, so the only Caddy reference left
+      // The units live in Darkflib/gitops, so the only Caddy reference left
       // here is the one CI runs to validate and smoke-test deploy/Caddyfile.
       // It sits inside a `run:` script, which is just text to the
       // github-actions manager, so it would otherwise never be flagged.

@@ -1,6 +1,6 @@
 """Static-hosting contract tests for the Caddy configuration.
 
-The units that run it live in wwff-tech/gitops (quadlet/apps/orbit/), along with the copy of
+The units that run it live in Darkflib/gitops (quadlet/apps/orbit/), along with the copy of
 this Caddyfile that hosts install; this one is what CI validates and smoke-tests.
 """
 
