@@ -62,7 +62,7 @@ uv run orbit-data --config config/orbit-data.toml init-storage
 ```
 
 The default production configuration expects the persistent volume at `/data`.
-Deployment is wwff-tech/gitops, `quadlet/apps/orbit/` (units, timers, Caddy and nginx
+Deployment is Darkflib/gitops, `quadlet/apps/orbit/` (units, timers, Caddy and nginx
 configuration). See [`deploy/README.md`](deploy/README.md) for what is left here and for the
 volume, schedule, monitoring, and failover notes.
 

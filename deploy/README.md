@@ -1,6 +1,6 @@
 # deploy/
 
-Deployment is wwff-tech/gitops, `quadlet/apps/orbit/`: the Quadlet units, the timers, the
+Deployment is Darkflib/gitops, `quadlet/apps/orbit/`: the Quadlet units, the timers, the
 Caddyfile and front page that hosts install, the nginx vhost, and the image pin all live there
 and nowhere else. Nothing in this repository touches a host.
 
@@ -11,7 +11,7 @@ What is left here:
 | `Caddyfile` | The static server's configuration. CI validates it and smoke-tests a read-only Caddy against it; `tests/test_deployment.py` holds its contract. | A second copy: hosts install gitops' `files/Caddyfile`, which was byte-identical when the units were removed from here. Change both together. |
 | `orbit-egress.nft` | nftables SNAT fragment that sends the updaters' traffic out through a secondary address. | No gitops equivalent, and not in use: gitops' `app.toml` records that the fixed-egress SNAT was not carried over. |
 
-| Concern | In wwff-tech/gitops |
+| Concern | In Darkflib/gitops |
 | --- | --- |
 | Units, network, timers | `quadlet/apps/orbit/units/` |
 | Caddyfile, front page (`index.html`, `site.css`, `favicon.svg`) | `quadlet/apps/orbit/files/` |
@@ -21,9 +21,9 @@ What is left here:
 | Failure alerts | `OnFailure=gitops-alert@%n.service` (`quadlet/bin/alert.py`) |
 
 A push to `main` publishes `ghcr.io/darkflib/orbit-data:sha-<commit>` and signs it with cosign
-(keyless). The workflow's `promote` job then opens the pin as a PR in wwff-tech/gitops and
+(keyless). The workflow's `promote` job then opens the pin as a PR in Darkflib/gitops and
 merges it once that repository's checks pass; hosts pick it up on their next reconcile. It
-needs the `GITOPS_TOKEN` secret (contents and pull-requests write on wwff-tech/gitops) and
+needs the `GITOPS_TOKEN` secret (contents and pull-requests write on Darkflib/gitops) and
 fails saying so without it.
 
 To promote by hand (the fallback if that job fails, and how to roll back to an older commit),
