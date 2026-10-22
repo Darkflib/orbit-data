@@ -20,8 +20,9 @@ What is left here:
 | Image pin and signature check | `quadlet/bin/promote.py` against `quadlet/policy.toml`; the units pin a digest with `Pull=missing` |
 | Failure alerts | `OnFailure=gitops-alert@%n.service` (`quadlet/bin/alert.py`) |
 
-A push to `main` publishes `ghcr.io/darkflib/orbit-data:sha-<commit>` and signs it with cosign
-(keyless). The workflow's `promote` job then opens the pin as a PR in Darkflib/gitops and
+A push to `main` publishes `ghcr.io/darkflib/orbit-data:sha-<commit>`, signs it with cosign
+(keyless), and attests SLSA provenance and an SPDX SBOM on the same digest
+(`actions/attest-build-provenance`, `actions/attest`), which promotion requires. The workflow's `promote` job then opens the pin as a PR in Darkflib/gitops and
 merges it once that repository's checks pass; hosts pick it up on their next reconcile. It
 needs the `GITOPS_TOKEN` secret (contents and pull-requests write on Darkflib/gitops) and
 fails saying so without it.
