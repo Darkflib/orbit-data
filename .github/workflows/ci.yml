@@ -82,12 +82,15 @@ jobs:
       contents: read
       packages: write
       id-token: write # cosign keyless: hosts refuse unsigned images (Darkflib/gitops policy)
+      attestations: write # provenance and SBOM, recorded against this repo
     outputs:
       image: ${{ steps.publish.outputs.image }}
       tag: ${{ steps.publish.outputs.tag }}
+      digest: ${{ steps.publish.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
       - name: Build and publish
@@ -103,10 +106,65 @@ jobs:
           podman push --digestfile digest "$image:sha-${GITHUB_SHA}"
           podman push "$image:latest"
           digest="$(cat digest)"
+          # cosign login writes ~/.docker/config.json, which is where syft and the attest actions
+          # below look for credentials (the actions read that file and nothing else).
           printf '%s' "$GHCR_TOKEN" | cosign login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           cosign sign --yes "$image@${digest}"
-          { echo "image=$image"; echo "tag=sha-${GITHUB_SHA}"; } >> "$GITHUB_OUTPUT"
+          { echo "image=$image"; echo "tag=sha-${GITHUB_SHA}"; echo "digest=$digest"; } >> "$GITHUB_OUTPUT"
           echo "Signed: \`$image:sha-${GITHUB_SHA}@${digest}\`. Promoted by the next job; by hand, from a Darkflib/gitops checkout: \`python3 quadlet/bin/promote.py orbit $image sha-${GITHUB_SHA} --pr\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # SLSA provenance and an SPDX SBOM on the signed digest, stored beside the image
+      # (push-to-registry). Darkflib/gitops's policy.toml requires both ("github" kind) before
+      # promote.py pins a build, and checks the provenance names this repository.
+      - name: SLSA build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      # From the pushed image rather than the local build, so it describes the bytes the
+      # registry serves.
+      - name: Generate an SBOM
+        env:
+          IMAGE: ${{ steps.publish.outputs.image }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: syft "registry:${IMAGE}@${DIGEST}" -o "spdx-json=$RUNNER_TEMP/sbom.spdx.json"
+
+      # actions/attest rather than the deprecated actions/attest-sbom, which now wraps it.
+      - name: Attest the SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/sbom.spdx.json
+          push-to-registry: true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ github.sha }}
+          path: ${{ runner.temp }}/sbom.spdx.json
+          retention-days: 90
+
+      # Produced is not verified. The same checks promote.py makes: the signature and both
+      # attestations, against this workflow's own identity. The SBOM's predicate type is the
+      # versioned one GitHub records; cosign matches it exactly.
+      - name: Verify the signature and both attestations
+        env:
+          IMAGE: ${{ steps.publish.outputs.image }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          issuer=https://token.actions.githubusercontent.com
+          cosign verify --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$issuer" \
+            "${IMAGE}@${DIGEST}" >/dev/null
+          for type in slsaprovenance1 https://spdx.dev/Document/v2.3; do
+            cosign verify-attestation --type "$type" \
+              --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$issuer" \
+              "${IMAGE}@${DIGEST}" >/dev/null
+          done
+          echo "signature, provenance and SBOM verify for ${IMAGE}@${DIGEST}"
 
   # Opens the pin as a PR in Darkflib/gitops and merges it once that repository's checks pass.
   # Nothing here touches a host: each host's reconcile agent pulls the merged pin and verifies
