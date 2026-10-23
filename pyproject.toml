@@ -24,7 +24,7 @@ dev = [
   "pylint>=4.0.7,<5",
   "pytest>=9.0.3,<10",
   "pytest-cov>=7.1,<8",
-  "ruff>=0.16.2,<0.17",
+  "ruff>=0.17.1,<0.18",
 ]
 
 [tool.hatch.build.targets.wheel]
