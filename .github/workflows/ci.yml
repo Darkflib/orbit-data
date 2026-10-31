@@ -17,12 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
-          python-version: "3.14"
+          python-version: "3.15"
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          version: "0.12.3"
+          version: "0.13.6"
           enable-cache: true
       - run: uv sync --locked --all-groups
       - run: uv run ruff format --check .
@@ -47,7 +47,7 @@ jobs:
           podman run --rm --read-only --user 65532:65532 \
             --security-opt=no-new-privileges --cap-drop all --cap-add NET_BIND_SERVICE \
             --volume "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
-            docker.io/library/caddy:2.11.4-alpine \
+            docker.io/library/caddy:2.11.6-alpine \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: Smoke test read-only static server
         run: |
@@ -63,7 +63,7 @@ jobs:
             --publish 127.0.0.1::8080 \
             --volume "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
             --volume "$test_root:/srv/orbit-data:ro" \
-            docker.io/library/caddy:2.11.4-alpine \
+            docker.io/library/caddy:2.11.6-alpine \
             caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
           port="$(podman port orbit-data-caddy 8080/tcp | sed 's/.*://')"
           for attempt in 1 2 3 4 5; do
@@ -90,7 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
       - name: Build and publish
@@ -140,7 +140,7 @@ jobs:
           sbom-path: ${{ runner.temp }}/sbom.spdx.json
           push-to-registry: true
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom-${{ github.sha }}
           path: ${{ runner.temp }}/sbom.spdx.json
