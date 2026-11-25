@@ -22,13 +22,12 @@ What is left here:
 
 A push to `main` publishes `ghcr.io/darkflib/orbit-data:sha-<commit>`, signs it with cosign
 (keyless), and attests SLSA provenance and an SPDX SBOM on the same digest
-(`actions/attest-build-provenance`, `actions/attest`), which promotion requires. The workflow's `promote` job then opens the pin as a PR in Darkflib/gitops and
-merges it once that repository's checks pass; hosts pick it up on their next reconcile. It
-needs the `GITOPS_TOKEN` secret (contents and pull-requests write on Darkflib/gitops) and
-fails saying so without it.
+(`actions/attest-build-provenance`, `actions/attest`), which promotion requires. Darkflib/gitops' hourly Promote workflow then opens the pin as a PR
+there and merges it once that repository's checks pass; hosts pick it up on their next
+reconcile. This repository holds no gitops credential.
 
-To promote by hand (the fallback if that job fails, and how to roll back to an older commit),
-from a gitops checkout:
+To promote at once, or to roll back to an older commit, run that Promote workflow by hand,
+or from a gitops checkout:
 
 ```bash
 python3 quadlet/bin/promote.py orbit ghcr.io/darkflib/orbit-data sha-<commit> --pr
